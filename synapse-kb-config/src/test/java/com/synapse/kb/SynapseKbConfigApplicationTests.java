@@ -1,10 +1,10 @@
-package com.synapse.kb.domain;
+package com.synapse.kb;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class SynapseKbDomainApplicationTests {
+class SynapseKbConfigApplicationTests {
 
     @Test
     void contextLoads() {

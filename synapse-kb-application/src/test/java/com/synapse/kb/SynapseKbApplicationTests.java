@@ -1,10 +1,10 @@
-package com.synapse.kb.bootstrap;
+package com.synapse.kb;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class SynapseKbBootstrapApplicationTests {
+class SynapseKbApplicationTests {
 
     @Test
     void contextLoads() {

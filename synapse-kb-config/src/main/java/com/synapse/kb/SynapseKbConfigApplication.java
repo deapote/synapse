@@ -1,13 +1,13 @@
-package com.synapse.kb.adapter;
+package com.synapse.kb;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class SynapseKbAdapterApplication {
+public class SynapseKbConfigApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(SynapseKbAdapterApplication.class, args);
+        SpringApplication.run(SynapseKbConfigApplication.class, args);
     }
 
 }
