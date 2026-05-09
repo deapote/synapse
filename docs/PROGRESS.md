@@ -8,11 +8,11 @@
 
 ### Phase 1: 基础设施
 
-- [ ] **Task 1: 搭建 Maven 多模块骨架**
-  - [ ] 根 pom.xml 配置正确
-  - [ ] 6 个子模块 pom.xml 配置正确
-  - [ ] Maven validate 通过
-  - [ ] Git 初始 commit
+- [x] **Task 1: 搭建 Maven 多模块骨架**
+  - [x] 根 pom.xml 配置正确
+  - [x] 6 个子模块 pom.xml 配置正确
+  - [x] Maven validate 通过
+  - [x] Git 初始 commit
 
 - [ ] **Task 2: synapse-shared - 共享异常**
   - [ ] `DomainException.java`
