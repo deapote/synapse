@@ -275,15 +275,15 @@ LlmPort.generate(RagContext.prompt()) → OllamaLlmAdapter
 
 | 层级 | 类命名 | 包命名 |
 |------|--------|--------|
-| 领域实体 | `KnowledgeBase`, `Document` | `domain.model` |
-| 领域服务 | `RecursiveChunkingStrategy` | `domain.service` |
-| 仓储接口 | `DocumentRepository` | `domain.repository` |
-| 入站端口 | `IngestDocumentUseCase` | `application.port.in` |
-| 出站端口 | `VectorStorePort` | `application.port.out` |
-| 应用服务 | `KnowledgeBaseApplicationService` | `application.service` |
-| Controller | `DocumentController` | `adapter.in.web` |
-| 出站适配器 | `MilvusVectorStoreAdapter` | `adapter.out.vector` |
-| MongoDB 实体 | `DocumentDocument` | `adapter.out.persistence.entity` |
+| 领域实体 | `KnowledgeBase`, `Document` | `kb.model` |
+| 领域服务 | `RecursiveChunkingStrategy` | `kb.service` |
+| 仓储接口 | `DocumentRepository` | `kb.repository` |
+| 入站端口 | `IngestDocumentUseCase` | `kb.port.in` |
+| 出站端口 | `VectorStorePort` | `kb.port.out` |
+| 应用服务 | `KnowledgeBaseApplicationService` | `kb.service` |
+| Controller | `DocumentController` | `kb.adapter.in.web` |
+| 出站适配器 | `MilvusVectorStoreAdapter` | `kb.adapter.out.vector` |
+| MongoDB 实体 | `DocumentDocument` | `kb.adapter.out.persistence.entity` |
 
 ### 响应式边界
 
@@ -297,7 +297,7 @@ LlmPort.generate(RagContext.prompt()) → OllamaLlmAdapter
 - **领域异常**：`DomainException`（运行时异常），在 domain 层定义。
 - **应用异常**：在 application 层定义，继承 `DomainException`。
 - **适配器异常**：在 adapter 层捕获并转换为领域/应用异常。
-- **全局异常处理**：在 `adapter.in.web` 中定义 `@ControllerAdvice`。
+- **全局异常处理**：在 `kb.adapter.in.web` 中定义 `@ControllerAdvice`。
 
 ## 禁止事项
 
