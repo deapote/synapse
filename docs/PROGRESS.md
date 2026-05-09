@@ -14,14 +14,14 @@
   - [x] Maven validate 通过
   - [x] Git 初始 commit
 
-- [ ] **Task 2: synapse-shared - 共享异常**
-  - [ ] `DomainException.java`
+- [x] **Task 2: synapse-shared - 共享异常**
+  - [x] `DomainException.java`
 
 ### Phase 2: 领域层 (synapse-kb-domain)
 
-- [ ] **Task 3: ID 值对象**
-  - [ ] `KnowledgeBaseId.java`
-  - [ ] `DocumentId.java`
+- [x] **Task 3: ID 值对象**
+  - [x] `KnowledgeBaseId.java`
+  - [x] `DocumentId.java`
 
 - [ ] **Task 4: 文档状态枚举和实体**
   - [ ] `DocumentStatus.java`
