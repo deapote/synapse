@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.synapse</groupId>
+    <artifactId>synapse</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Synapse</name>
+    <description>Multi-knowledgebase RAG System</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <langchain4j.version>1.13.0</langchain4j.version>
+    </properties>
+
+    <modules>
+        <module>synapse-shared</module>
+        <module>synapse-kb-domain</module>
+        <module>synapse-kb-application</module>
+        <module>synapse-kb-adapter</module>
+        <module>synapse-kb-config</module>
+        <module>synapse-kb-bootstrap</module>
+    </modules>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.synapse</groupId>
+                <artifactId>synapse-shared</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.synapse</groupId>
+                <artifactId>synapse-kb-domain</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.synapse</groupId>
+                <artifactId>synapse-kb-application</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.synapse</groupId>
+                <artifactId>synapse-kb-adapter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.synapse</groupId>
+                <artifactId>synapse-kb-config</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>${langchain4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
