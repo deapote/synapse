@@ -23,16 +23,16 @@
   - [x] `KnowledgeBaseId.java`
   - [x] `DocumentId.java`
 
-- [ ] **Task 4: 文档状态枚举和实体**
-  - [ ] `DocumentStatus.java`
-  - [ ] `KnowledgeBase.java`
-  - [ ] `Document.java`
+- [x] **Task 4: 文档状态枚举和实体**
+  - [x] `DocumentStatus.java`
+  - [x] `KnowledgeBase.java`
+  - [x] `Document.java`
 
-- [ ] **Task 5: 值对象**
-  - [ ] `DocumentChunk.java`
-  - [ ] `Query.java`
-  - [ ] `RagContext.java`
-  - [ ] `Answer.java`
+- [x] **Task 5: 值对象**
+  - [x] `DocumentChunk.java`
+  - [x] `Query.java`
+  - [x] `RagContext.java`
+  - [x] `Answer.java`
   - [ ] `ChunkReference.java`
 
 - [ ] **Task 6: 领域服务和仓储接口**

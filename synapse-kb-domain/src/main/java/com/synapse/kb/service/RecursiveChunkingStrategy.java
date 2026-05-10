@@ -122,8 +122,8 @@ public class RecursiveChunkingStrategy {
             return sentenceBreak;
         }
 
-        // 优先级3：找空格（单词边界）
-        int wordBreak = text.indexOf(" ", end);
+        // 优先级3：找空格（单词边界），从 end 往前找，保证断点不超过 end
+        int wordBreak = text.lastIndexOf(" ", end);
         if (wordBreak > start + maxSegmentSize / 2) {
             return wordBreak;
         }
