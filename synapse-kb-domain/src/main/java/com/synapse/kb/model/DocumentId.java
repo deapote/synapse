@@ -25,9 +25,9 @@ public record DocumentId(String value) {
     /**
      * 生成新的随机文档标识
      *
-     * @return 基于 UUID 的 KnowledgeBaseId 实例
+     * @return 基于 UUID 的 DocumentId 实例
      */
-    public static DocumentId generate(String id) {
+    public static DocumentId generate() {
         return new DocumentId(UUID.randomUUID().toString());
     }
 }
