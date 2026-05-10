@@ -1,6 +1,8 @@
 package com.synapse.kb.port.out;
 
 import com.synapse.kb.model.DocumentChunk;
+import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.KnowledgeBaseId;
 
 import java.util.List;
 
@@ -19,7 +21,7 @@ public interface VectorStorePort {
      * @param chunks          文档分块列表
      * @param embeddings      各块对应的向量列表，顺序与 chunks 一致
      */
-    void store(String knowledgeBaseId, List<DocumentChunk> chunks, List<float[]> embeddings);
+    void store(KnowledgeBaseId knowledgeBaseId, List<DocumentChunk> chunks, List<float[]> embeddings);
 
     /**
      * 向量相似度检索。
@@ -29,7 +31,7 @@ public interface VectorStorePort {
      * @param topK            返回最相似的 K 个结果
      * @return 检索结果列表，按相似度降序排列
      */
-    List<ChunkSearchResult> search(String knowledgeBaseId, float[] queryEmbedding, int topK);
+    List<ChunkSearchResult> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK);
 
     /**
      * 删除指定文档的所有向量。
@@ -37,5 +39,5 @@ public interface VectorStorePort {
      * @param knowledgeBaseId 知识库 ID
      * @param documentId      文档 ID
      */
-    void deleteByDocumentId(String knowledgeBaseId, String documentId);
+    void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId);
 }

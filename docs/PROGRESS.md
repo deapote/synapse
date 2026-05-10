@@ -33,30 +33,30 @@
   - [x] `Query.java`
   - [x] `RagContext.java`
   - [x] `Answer.java`
-  - [ ] `ChunkReference.java`
+  - [x] `ChunkReference.java`
 
-- [ ] **Task 6: 领域服务和仓储接口**
-  - [ ] `RecursiveChunkingStrategy.java`
-  - [ ] `KnowledgeBaseRepository.java`
-  - [ ] `DocumentRepository.java`
-  - [ ] `IngestionException.java`
+- [x] **Task 6: 领域服务和仓储接口**
+  - [x] `RecursiveChunkingStrategy.java`
+  - [x] `KnowledgeBaseRepository.java`
+  - [x] `DocumentRepository.java`
+  - [x] `IngestionException.java`
 
 ### Phase 3: 应用层 (synapse-kb-application)
 
-- [ ] **Task 7: 入站端口（UseCase）**
-  - [ ] `CreateKnowledgeBaseUseCase.java`
-  - [ ] `DeleteKnowledgeBaseUseCase.java`
-  - [ ] `IngestDocumentUseCase.java`
-  - [ ] `ListDocumentsUseCase.java`
-  - [ ] `DeleteDocumentUseCase.java`
-  - [ ] `QueryKnowledgeBaseUseCase.java`
+- [x] **Task 7: 入站端口（UseCase）**
+  - [x] `CreateKnowledgeBaseUseCase.java`
+  - [x] `DeleteKnowledgeBaseUseCase.java`
+  - [x] `IngestDocumentUseCase.java`
+  - [x] `ListDocumentsUseCase.java`
+  - [x] `DeleteDocumentUseCase.java`
+  - [x] `QueryKnowledgeBaseUseCase.java`
 
-- [ ] **Task 8: 出站端口（SPI）**
-  - [ ] `VectorStorePort.java`
-  - [ ] `ChunkSearchResult.java`
-  - [ ] `EmbeddingPort.java`
-  - [ ] `LlmPort.java`
-  - [ ] `DocumentParserPort.java`
+- [x] **Task 8: 出站端口（SPI）**
+  - [x] `VectorStorePort.java`
+  - [x] `ChunkSearchResult.java`
+  - [x] `EmbeddingPort.java`
+  - [x] `LlmPort.java`
+  - [x] `DocumentParserPort.java`
 
 - [ ] **Task 9: 应用服务实现**
   - [ ] `KnowledgeBaseApplicationService.java`
@@ -102,8 +102,17 @@
 
 ## 当前进度
 
-**已完成:** 0 / 15 任务
+**已完成:** 8 / 15 任务
 
-**最近更新:** 2026-05-10
+**最近更新:** 2026-05-11
 
-**下一步:** Task 1 - 搭建 Maven 多模块骨架（已完成，待 commit）
+**当前分支:** `feature/domain-layer`
+
+**已完成内容:**
+- Phase 1 基础设施（shared 异常基类）
+- Phase 2 领域层全部代码（实体、值对象、枚举、仓储接口、领域服务、异常）
+- Phase 3 应用层端口定义（6 个 UseCase + 4 个 Port + ChunkSearchResult）
+
+**待办:**
+- Task 9: `KnowledgeBaseApplicationService` 应用服务实现
+- Phase 4-6: 适配器层、配置层、验证

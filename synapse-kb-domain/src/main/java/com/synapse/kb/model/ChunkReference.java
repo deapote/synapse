@@ -11,7 +11,7 @@ import com.synapse.shared.exception.DomainException;
  * @param documentId    来源文档唯一标识
  * @param documentName  来源文档文件名
  * @param chunkText     被引用的片段文本
- * @param score         相似度分数
+ * @param score         相似度分数，范围 [0, 1]
  * @param startPosition 片段在原文中的起始字符位置（含）
  * @param endPosition   片段在原文中的结束字符位置（含）
  */
@@ -19,7 +19,7 @@ public record ChunkReference(
         String documentId,
         String documentName,
         String chunkText,
-        double score,
+        float score,
         int startPosition,
         int endPosition
 ) {
