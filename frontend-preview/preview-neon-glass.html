@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Synapse — Neon Glass 预览</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  @import url('https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-base: #0f0c29;
+    --bg-mid: #302b63;
+    --bg-end: #24243e;
+    --glass-bg: rgba(255, 255, 255, 0.05);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-border-hover: rgba(255, 255, 255, 0.2);
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.6);
+    --text-muted: rgba(255, 255, 255, 0.35);
+    --accent-pink: #ff006e;
+    --accent-purple: #8338ec;
+    --accent-cyan: #00d9ff;
+    --warning: #ffb703;
+    --success: #38b000;
+    --danger: #ff0055;
+  }
+
+  body {
+    background: linear-gradient(135deg, var(--bg-base) 0%, var(--bg-mid) 50%, var(--bg-end) 100%);
+    background-attachment: fixed;
+    color: var(--text-primary);
+    font-family: 'Manrope', sans-serif;
+    min-height: 100vh;
+    padding: 48px;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* Animated gradient orbs */
+  body::before {
+    content: '';
+    position: fixed;
+    top: -20%;
+    right: -10%;
+    width: 600px;
+    height: 600px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 0, 110, 0.25) 0%, transparent 70%);
+    pointer-events: none;
+    animation: float 8s ease-in-out infinite;
+  }
+  body::after {
+    content: '';
+    position: fixed;
+    bottom: -20%;
+    left: -10%;
+    width: 500px;
+    height: 500px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(131, 56, 236, 0.2) 0%, transparent 70%);
+    pointer-events: none;
+    animation: float 10s ease-in-out infinite reverse;
+  }
+  @keyframes float {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50% { transform: translate(-30px, 20px) scale(1.1); }
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header */
+  .brand {
+    font-family: 'Clash Display', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    background: linear-gradient(90deg, var(--accent-pink), var(--accent-purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-family: 'Clash Display', sans-serif;
+    font-size: 42px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .subtitle {
+    font-size: 16px;
+    color: var(--text-secondary);
+    margin-bottom: 48px;
+  }
+
+  /* Section */
+  .section { margin-bottom: 48px; }
+  .section-title {
+    font-family: 'Clash Display', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--text-muted);
+    margin-bottom: 24px;
+  }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 28px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    border: none;
+    font-family: inherit;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent-pink), var(--accent-purple));
+    color: #fff;
+    box-shadow: 0 4px 20px rgba(255, 0, 110, 0.3);
+  }
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(255, 0, 110, 0.5);
+  }
+  .btn-primary::after {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: linear-gradient(
+      45deg,
+      transparent 30%,
+      rgba(255,255,255,0.1) 50%,
+      transparent 70%
+    );
+    transform: rotate(45deg) translateX(-100%);
+    transition: transform 0.6s;
+  }
+  .btn-primary:hover::after {
+    transform: rotate(45deg) translateX(100%);
+  }
+  .btn-secondary {
+    background: var(--glass-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(10px);
+  }
+  .btn-secondary:hover {
+    border-color: var(--glass-border-hover);
+    background: rgba(255,255,255,0.08);
+    transform: translateY(-2px);
+  }
+  .btn-danger {
+    background: rgba(255, 0, 85, 0.15);
+    color: var(--danger);
+    border: 1px solid rgba(255, 0, 85, 0.3);
+    backdrop-filter: blur(10px);
+  }
+  .btn-danger:hover {
+    background: rgba(255, 0, 85, 0.25);
+    transform: translateY(-2px);
+  }
+
+  /* Card - Glass */
+  .card {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 28px;
+    backdrop-filter: blur(20px);
+    transition: all 0.3s ease;
+  }
+  .card:hover {
+    border-color: var(--glass-border-hover);
+    transform: translateY(-4px);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255,255,255,0.05);
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .card-title {
+    font-family: 'Clash Display', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .card-meta {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .card-body {
+    font-size: 14px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  /* Status badges */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'Manrope', sans-serif;
+  }
+  .badge-pending {
+    background: rgba(255, 183, 3, 0.15);
+    color: var(--warning);
+    border: 1px solid rgba(255, 183, 3, 0.3);
+  }
+  .badge-completed {
+    background: rgba(56, 176, 0, 0.15);
+    color: var(--success);
+    border: 1px solid rgba(56, 176, 0, 0.3);
+  }
+  .badge-processing {
+    background: rgba(0, 217, 255, 0.15);
+    color: var(--accent-cyan);
+    border: 1px solid rgba(0, 217, 255, 0.3);
+  }
+  .pulse {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
+    50% { opacity: 0.4; box-shadow: 0 0 2px currentColor; }
+  }
+
+  /* Chat preview */
+  .chat-bubble {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 28px;
+    margin-bottom: 20px;
+    max-width: 85%;
+    backdrop-filter: blur(20px);
+    position: relative;
+  }
+  .chat-bubble::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+    border-radius: 20px 20px 0 0;
+  }
+  .chat-label {
+    font-family: 'Clash Display', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    background: linear-gradient(90deg, var(--accent-pink), var(--accent-purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+  .chat-text {
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--text-primary);
+  }
+  .reference {
+    margin-top: 16px;
+    padding: 16px 20px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+  .reference-source {
+    font-family: 'Clash Display', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    background: linear-gradient(90deg, var(--accent-pink), var(--accent-purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 6px;
+  }
+
+  /* Color palette */
+  .palette { display: flex; gap: 16px; margin-top: 20px; flex-wrap: wrap; }
+  .color-swatch {
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
+    position: relative;
+    border: 1px solid var(--glass-border);
+  }
+  .color-swatch::after {
+    content: attr(data-label);
+    position: absolute;
+    bottom: -22px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: 'Manrope', sans-serif;
+    white-space: nowrap;
+    letter-spacing: 0.05em;
+  }
+
+  .flex-gap { display: flex; gap: 12px; flex-wrap: wrap; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="brand">Synapse Knowledge Base</div>
+  <h1>Neon Glass</h1>
+  <p class="subtitle">未来感全息界面，沉浸于光与深度</p>
+
+  <div class="section">
+    <div class="section-title">Buttons</div>
+    <div class="flex-gap">
+      <button class="btn btn-primary">+ 新建知识库</button>
+      <button class="btn btn-secondary">上传文档</button>
+      <button class="btn btn-danger">删除</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Knowledge Bases</div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">产品手册知识库</span>
+          <span class="badge badge-completed">就绪</span>
+        </div>
+        <div class="card-body">
+          存放所有产品相关的技术文档，共 12 个文档，3,240 个文本块。<br>
+          <span style="color:var(--text-muted);display:block;margin-top:10px;font-size:12px;">ID: kb_7f3a9d2e</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">内部培训资料</span>
+          <span class="badge badge-pending"><span class="pulse"></span>同步中</span>
+        </div>
+        <div class="card-body">
+          新员工入职培训与技术分享文档。上次更新：2 小时前。<br>
+          <span style="color:var(--text-muted);display:block;margin-top:10px;font-size:12px;">ID: kb_9c1e4b5f</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Document Status</div>
+    <div class="flex-gap">
+      <span class="badge badge-pending"><span class="pulse"></span>PENDING</span>
+      <span class="badge badge-processing"><span class="pulse"></span>PROCESSING</span>
+      <span class="badge badge-completed">COMPLETED</span>
+      <span class="badge" style="background:rgba(255,0,85,0.15);color:var(--danger);border:1px solid rgba(255,0,85,0.3);">FAILED</span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Q&A Conversation</div>
+    <div class="chat-bubble">
+      <div class="chat-label">AI 回答</div>
+      <div class="chat-text">
+        根据产品手册，核心功能包括：实时数据同步、多模态检索、智能文档解析以及自动化工作流编排。系统支持 PDF、Word、TXT 等格式的批量上传与向量化存储。
+      </div>
+      <div class="reference">
+        <div class="reference-source">产品手册_v2.pdf · 相关度 0.92</div>
+        "实时数据同步是本产品的核心功能之一，支持毫秒级延迟的双向同步，适用于大规模分布式场景..."
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Color Palette</div>
+    <div class="palette">
+      <div class="color-swatch" style="background:#0f0c29;" data-label="base"></div>
+      <div class="color-swatch" style="background:#ff006e;" data-label="pink"></div>
+      <div class="color-swatch" style="background:#8338ec;" data-label="purple"></div>
+      <div class="color-swatch" style="background:#00d9ff;" data-label="cyan"></div>
+      <div class="color-swatch" style="background:#38b000;" data-label="success"></div>
+      <div class="color-swatch" style="background:#ffb703;" data-label="warning"></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
