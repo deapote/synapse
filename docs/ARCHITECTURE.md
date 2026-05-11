@@ -40,11 +40,12 @@ synapse/
 | 端口 | 职责 |
 |------|------|
 | `CreateKnowledgeBaseUseCase` | 创建知识库 |
+| `ListKnowledgeBaseUseCase` | 列出所有知识库 |
+| `DeleteKnowledgeBaseUseCase` | 删除知识库（级联清理） |
 | `IngestDocumentUseCase` | 上传并处理文档 |
-| `QueryKnowledgeBaseUseCase` | 检索 + 组装 prompt，返回 `RagContext` |
 | `ListDocumentUseCase` | 列出知识库下的文档 |
 | `DeleteDocumentUseCase` | 删除文档（连带清理向量） |
-| `DeleteKnowledgeBaseUseCase` | 删除知识库（级联清理） |
+| `QueryKnowledgeBaseUseCase` | 检索 + 组装 prompt，返回 `RagContext` |
 
 ### 出站端口（Port）
 
@@ -113,6 +114,7 @@ AnswerResponse（answer + references）
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/knowledge-bases` | 创建知识库 |
+| GET | `/api/knowledge-bases` | 列出知识库 |
 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库（级联） |
 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
 | GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档 |

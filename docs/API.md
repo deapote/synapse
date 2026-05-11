@@ -40,11 +40,12 @@
 | 序号 | 方法 | 路径 | 说明 |
 |:---|:---|:---|:---|
 | 1 | POST | `/api/knowledge-bases` | 创建知识库 |
-| 2 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库 |
-| 3 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
-| 4 | GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档 |
-| 5 | DELETE | `/api/documents/{id}` | 删除文档 |
-| 6 | POST | `/api/knowledge-bases/{kbId}/query` | 知识库问答 |
+| 2 | GET | `/api/knowledge-bases` | 列出知识库 |
+| 3 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库 |
+| 4 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
+| 5 | GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档 |
+| 6 | DELETE | `/api/documents/{id}` | 删除文档 |
+| 7 | POST | `/api/knowledge-bases/{kbId}/query` | 知识库问答 |
 
 ---
 
@@ -99,7 +100,34 @@ Content-Type: application/json
 
 ---
 
-### 4.2 删除知识库
+### 4.2 列出知识库
+
+查询系统中所有已创建的知识库列表。
+
+**请求**
+
+```http
+GET /api/knowledge-bases
+```
+
+**响应**
+
+返回 `KnowledgeBaseResponse` 数组，按创建时间倒序排列。
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "产品手册知识库",
+    "description": "存放所有产品相关的技术文档",
+    "createdAt": "2026-05-12T08:30:00Z"
+  }
+]
+```
+
+---
+
+### 4.3 删除知识库
 
 删除指定知识库，级联删除其下的所有文档及向量数据。
 
@@ -125,7 +153,7 @@ DELETE /api/knowledge-bases/{id}
 
 ---
 
-### 4.3 上传文档
+### 4.4 上传文档
 
 向指定知识库上传文档。系统会自动解析文档内容、分块、生成向量并存储到 Milvus。
 
@@ -187,7 +215,7 @@ Content-Type: multipart/form-data
 
 ---
 
-### 4.4 列出文档
+### 4.5 列出文档
 
 查询指定知识库下的所有文档列表。
 
@@ -233,7 +261,7 @@ GET /api/knowledge-bases/{kbId}/documents
 
 ---
 
-### 4.5 删除文档
+### 4.6 删除文档
 
 删除指定文档，同时清理向量库中的相关向量数据。
 
@@ -259,7 +287,7 @@ DELETE /api/documents/{id}
 
 ---
 
-### 4.6 知识库问答
+### 4.7 知识库问答
 
 向指定知识库提问，系统执行 RAG 流程：检索相关文档片段 → 组装上下文 → 调用 LLM 生成回答。
 
