@@ -18,10 +18,13 @@ public interface VectorStorePort {
      * 存储文档块的向量。
      *
      * @param knowledgeBaseId 知识库 ID，用于隔离不同知识库的数据
+     * @param documentId      文档 ID，删除时用于定位该文档的所有向量
+     * @param documentName    文档文件名，搜索结果中展示来源用
      * @param chunks          文档分块列表
      * @param embeddings      各块对应的向量列表，顺序与 chunks 一致
      */
-    void store(KnowledgeBaseId knowledgeBaseId, List<DocumentChunk> chunks, List<float[]> embeddings);
+    void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
+               List<DocumentChunk> chunks, List<float[]> embeddings);
 
     /**
      * 向量相似度检索。

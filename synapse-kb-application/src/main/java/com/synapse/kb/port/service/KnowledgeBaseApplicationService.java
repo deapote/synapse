@@ -263,8 +263,14 @@ public class KnowledgeBaseApplicationService implements
             );
 
             // 4. 存储：把（文档块 + 对应向量）写入 Milvus 向量库
-            // 后续问答时，就是从这个库里检索相似向量
-            vectorStorePort.store(document.getKnowledgeBaseId(), chunks, embeddings);
+            // 传入 documentId 和 documentName，用于后续删除和搜索结果展示
+            vectorStorePort.store(
+                    document.getKnowledgeBaseId(),
+                    document.getId(),
+                    document.getFileName(),
+                    chunks,
+                    embeddings
+            );
 
             // 5. 记录分块数量，供前端展示和监控统计
             document.setChunkCount(chunks.size());
