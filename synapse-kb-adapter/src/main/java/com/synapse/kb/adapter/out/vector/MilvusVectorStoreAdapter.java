@@ -20,6 +20,7 @@ import io.milvus.v2.service.vector.request.InsertReq;
 import io.milvus.v2.service.vector.request.SearchReq;
 import io.milvus.v2.service.vector.request.data.FloatVec;
 import io.milvus.v2.service.vector.response.SearchResp;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -34,20 +35,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>实现 {@link VectorStorePort}，通过 Milvus SDK v2 操作向量数据库，
  * 负责文档块向量的存储、相似度检索和按文档删除。
  *
- * <p>Collection 名称固定为 {@code synapse_document_chunks}，向量维度 1536，
- * 使用 IVF_FLAT 索引和 COSINE 距离度量。启动时自动检查并创建 Collection。
+ * <p>配置从 {@code application.yml} 读取，首次使用 {@code store}/{@code search}/{@code delete}
+ * 时才连接 Milvus 服务器并初始化 Collection，避免启动时外部服务不可用导致应用崩溃。
  */
 @Component
 public class MilvusVectorStoreAdapter implements VectorStorePort {
 
-    private static final String COLLECTION_NAME = "synapse_document_chunks";
-    private static final int VECTOR_DIM = 1536;
+    private final String host;
+    private final int port;
+    private final String collectionName;
+    private final int vectorDim;
 
     private MilvusClientV2 client;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
 
-    public MilvusVectorStoreAdapter() {
-        // 构造函数不做任何网络操作，延迟到第一次使用时初始化
+    public MilvusVectorStoreAdapter(
+            @Value("${milvus.host:127.0.0.1}") String host,
+            @Value("${milvus.port:19530}") int port,
+            @Value("${milvus.collection-name:synapse_document_chunks}") String collectionName,
+            @Value("${milvus.embedding-dimension:1536}") int vectorDim) {
+        this.host = host;
+        this.port = port;
+        this.collectionName = collectionName;
+        this.vectorDim = vectorDim;
     }
 
     /**
@@ -65,7 +75,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 return;
             }
             ConnectConfig config = ConnectConfig.builder()
-                    .uri("http://localhost:19530")
+                    .uri("http://" + host + ":" + port)
                     .build();
             this.client = new MilvusClientV2(config);
             initCollection();
@@ -78,7 +88,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
      */
     private void initCollection() {
         Boolean exists = client.hasCollection(
-                HasCollectionReq.builder().collectionName(COLLECTION_NAME).build()
+                HasCollectionReq.builder().collectionName(collectionName).build()
         );
         if (Boolean.TRUE.equals(exists)) {
             return;
@@ -104,7 +114,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 .maxLength(65535).build());
         schema.addField(AddFieldReq.builder()
                 .fieldName("vector").dataType(DataType.FloatVector)
-                .dimension(VECTOR_DIM).build());
+                .dimension(vectorDim).build());
         schema.addField(AddFieldReq.builder()
                 .fieldName("startPosition").dataType(DataType.Int32).build());
         schema.addField(AddFieldReq.builder()
@@ -119,7 +129,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 .build());
 
         client.createCollection(CreateCollectionReq.builder()
-                .collectionName(COLLECTION_NAME)
+                .collectionName(collectionName)
                 .collectionSchema(schema)
                 .indexParams(indexes)
                 .build());
@@ -159,7 +169,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
 
         try {
             client.insert(InsertReq.builder()
-                    .collectionName(COLLECTION_NAME)
+                    .collectionName(collectionName)
                     .data(data)
                     .build());
         } catch (Exception e) {
@@ -172,9 +182,9 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         ensureInitialized();
         try {
             SearchReq req = SearchReq.builder()
-                    .collectionName(COLLECTION_NAME)
+                    .collectionName(collectionName)
                     .data(List.of(new FloatVec(queryEmbedding)))
-                    .filter("knowledgeBaseId == '" + knowledgeBaseId.value() + "'")
+                    .filter("knowledgeBaseId == '" + escapeFilterValue(knowledgeBaseId.value()) + "'")
                     .topK(topK)
                     .outputFields(List.of("documentId", "documentName", "chunkText", "startPosition", "endPosition"))
                     .build();
@@ -187,7 +197,6 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 return results;
             }
 
-            // 只传了一个查询向量，batchResults 只有一层
             for (SearchResp.SearchResult result : batchResults.get(0)) {
                 Map<String, Object> entity = result.getEntity();
                 float score = normalizeScore(result.getScore());
@@ -213,12 +222,24 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         ensureInitialized();
         try {
             client.delete(DeleteReq.builder()
-                    .collectionName(COLLECTION_NAME)
-                    .filter("documentId == '" + documentId.value() + "'")
+                    .collectionName(collectionName)
+                    .filter("documentId == '" + escapeFilterValue(documentId.value()) + "'")
                     .build());
         } catch (Exception e) {
             throw new DomainException("向量删除失败", e);
         }
+    }
+
+    /**
+     * 转义 Milvus filter 字符串中的单引号，防止注入攻击。
+     *
+     * <p>虽然当前 ID 为 UUID 格式（不含单引号），但作为防御性编程保留此校验。
+     *
+     * @param value 原始 filter 值
+     * @return 转义后的值
+     */
+    private String escapeFilterValue(String value) {
+        return value.replace("'", "\\'");
     }
 
     /**

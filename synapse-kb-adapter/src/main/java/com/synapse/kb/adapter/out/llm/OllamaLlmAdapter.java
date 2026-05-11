@@ -3,6 +3,7 @@ package com.synapse.kb.adapter.out.llm;
 import com.synapse.kb.port.out.LlmPort;
 import com.synapse.shared.exception.DomainException;
 import dev.langchain4j.model.ollama.OllamaChatModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -11,18 +12,23 @@ import org.springframework.stereotype.Component;
  * <p>实现 {@link LlmPort}，通过本地 Ollama 服务调用 chat 模型，
  * 将组装好的 prompt 转换为生成的文本回答。
  *
- * <p>当前使用模型 {@code qwen2.5:7b}，配置暂时硬编码，后续通过
- * {@code OllamaProperties} 外部化。
+ * <p>配置从 {@code application.yml} 读取：
+ * <ul>
+ *   <li>{@code ollama.base-url} — Ollama 服务地址</li>
+ *   <li>{@code ollama.chat-model} — 对话模型名称</li>
+ * </ul>
  */
 @Component
 public class OllamaLlmAdapter implements LlmPort {
 
     private final OllamaChatModel chatModel;
 
-    public OllamaLlmAdapter() {
+    public OllamaLlmAdapter(
+            @Value("${ollama.base-url:http://localhost:11434}") String baseUrl,
+            @Value("${ollama.chat-model:qwen2.5:7b}") String modelName) {
         this.chatModel = OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("qwen2.5:7b")
+                .baseUrl(baseUrl)
+                .modelName(modelName)
                 .build();
     }
 

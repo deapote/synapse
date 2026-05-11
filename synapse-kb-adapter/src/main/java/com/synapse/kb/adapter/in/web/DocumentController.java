@@ -17,6 +17,7 @@ import reactor.core.scheduler.Schedulers;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
 /**
@@ -47,6 +48,8 @@ public class DocumentController {
      * 上传文档到指定知识库。
      *
      * <p>流程：接收文件 → 读取字节 → 计算 MD5 哈希 → 调用摄入用例 → 返回文档信息。
+     * 文件读取使用 WebFlux 响应式流，处理逻辑通过 {@code subscribeOn(Schedulers.boundedElastic())}
+     * 调度到弹性线程池，避免阻塞 Netty 事件循环。
      *
      * @param kbId     目标知识库 ID
      * @param filePart 上传的文件（multipart/form-data）
@@ -57,47 +60,43 @@ public class DocumentController {
             @PathVariable String kbId,
             @RequestPart("file") FilePart filePart
     ) {
-        return Mono.fromCallable(() -> {
-            // 读取文件内容为字节数组
-            byte[] bytes = DataBufferUtils.join(filePart.content())
-                    .map(dataBuffer -> {
-                        byte[] b = new byte[dataBuffer.readableByteCount()];
-                        dataBuffer.read(b);
-                        DataBufferUtils.release(dataBuffer);
-                        return b;
-                    })
-                    .block();
+        return DataBufferUtils.join(filePart.content())
+                .map(dataBuffer -> {
+                    byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                    dataBuffer.read(bytes);
+                    DataBufferUtils.release(dataBuffer);
+                    return bytes;
+                })
+                .flatMap(bytes -> Mono.fromCallable(() -> {
+                    String contentHash = bytesToHex(MessageDigest.getInstance("MD5").digest(bytes));
+                    String contentType = filePart.headers().getContentType() != null
+                            ? filePart.headers().getContentType().toString()
+                            : "application/octet-stream";
+                    InputStream content = new ByteArrayInputStream(bytes);
 
-            String contentHash = bytesToHex(MessageDigest.getInstance("MD5").digest(bytes));
-            String contentType = filePart.headers().getContentType() != null
-                    ? filePart.headers().getContentType().toString()
-                    : "application/octet-stream";
-            InputStream content = new ByteArrayInputStream(bytes);
+                    IngestDocumentUseCase.IngestDocumentCommand command =
+                            new IngestDocumentUseCase.IngestDocumentCommand(
+                                    new KnowledgeBaseId(kbId),
+                                    filePart.filename(),
+                                    contentType,
+                                    bytes.length,
+                                    contentHash,
+                                    content
+                            );
 
-            IngestDocumentUseCase.IngestDocumentCommand command =
-                    new IngestDocumentUseCase.IngestDocumentCommand(
-                            new KnowledgeBaseId(kbId),
+                    DocumentId documentId = ingestUseCase.ingest(command);
+
+                    return new DocumentResponse(
+                            documentId.value(),
+                            kbId,
                             filePart.filename(),
                             contentType,
                             bytes.length,
-                            contentHash,
-                            content
+                            "PENDING",
+                            0,
+                            null
                     );
-
-            DocumentId documentId = ingestUseCase.ingest(command);
-
-            // ingest 只返回 ID，用请求信息构造响应（实际场景可再查一次）
-            return new DocumentResponse(
-                    documentId.value(),
-                    kbId,
-                    filePart.filename(),
-                    contentType,
-                    bytes.length,
-                    "PENDING",
-                    0,
-                    null
-            );
-        }).subscribeOn(Schedulers.boundedElastic());
+                }).subscribeOn(Schedulers.boundedElastic()));
     }
 
     /**
@@ -145,7 +144,7 @@ public class DocumentController {
      * @param bytes 原始字节数组
      * @return 十六进制字符串（小写）
      */
-    private String bytesToHex(byte[] bytes) {
+    private String bytesToHex(byte[] bytes) throws NoSuchAlgorithmException {
         StringBuilder sb = new StringBuilder();
         for (byte b : bytes) {
             sb.append(String.format("%02x", b));

@@ -3,6 +3,7 @@ package com.synapse.kb.adapter.out.embedding;
 import com.synapse.kb.port.out.EmbeddingPort;
 import com.synapse.shared.exception.DomainException;
 import dev.langchain4j.model.ollama.OllamaEmbeddingModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -11,18 +12,23 @@ import org.springframework.stereotype.Component;
  * <p>实现 {@link EmbeddingPort}，通过本地 Ollama 服务调用 Embedding 模型，
  * 将文本转换为高维浮点向量（当前模型输出 1536 维）。
  *
- * <p>配置暂时硬编码，后续在 {@code KnowledgeBaseBeanConfig} 中通过
- * {@code OllamaProperties} 外部化。
+ * <p>配置从 {@code application.yml} 读取：
+ * <ul>
+ *   <li>{@code ollama.base-url} — Ollama 服务地址</li>
+ *   <li>{@code ollama.embedding-model} — Embedding 模型名称</li>
+ * </ul>
  */
 @Component
 public class OllamaEmbeddingAdapter implements EmbeddingPort {
 
     private final OllamaEmbeddingModel embeddingModel;
 
-    public OllamaEmbeddingAdapter() {
+    public OllamaEmbeddingAdapter(
+            @Value("${ollama.base-url:http://localhost:11434}") String baseUrl,
+            @Value("${ollama.embedding-model:hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0}") String modelName) {
         this.embeddingModel = OllamaEmbeddingModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0")
+                .baseUrl(baseUrl)
+                .modelName(modelName)
                 .build();
     }
 
