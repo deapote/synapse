@@ -1,3 +1,22 @@
+server:
+  port: 8082
+
 spring:
   application:
     name: synapse-kb-bootstrap
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/synapse_kb
+
+ollama:
+  base-url: http://localhost:11434
+  chat-model: qwen2.5:7b
+  embedding-model: hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0
+
+milvus:
+  host: 127.0.0.1
+  port: 19530
+  collection-name: synapse_document_chunks
+  embedding-dimension: 1536
+  index-type: IVF_FLAT
+  metric-type: COSINE
