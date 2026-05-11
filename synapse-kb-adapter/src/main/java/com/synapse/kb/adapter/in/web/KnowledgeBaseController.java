@@ -2,14 +2,17 @@ package com.synapse.kb.adapter.in.web;
 
 import com.synapse.kb.adapter.in.web.dto.CreateKnowledgeBaseRequest;
 import com.synapse.kb.adapter.in.web.dto.KnowledgeBaseResponse;
+import com.synapse.kb.model.KnowledgeBase;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.in.CreateKnowledgeBaseUseCase;
 import com.synapse.kb.port.in.DeleteKnowledgeBaseUseCase;
+import com.synapse.kb.port.in.ListKnowledgeBaseUseCase;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * 知识库管理 Web 控制器（入站适配器）。
@@ -26,11 +29,14 @@ public class KnowledgeBaseController {
 
     private final CreateKnowledgeBaseUseCase createUseCase;
     private final DeleteKnowledgeBaseUseCase deleteUseCase;
+    private final ListKnowledgeBaseUseCase listUseCase;
 
     public KnowledgeBaseController(CreateKnowledgeBaseUseCase createUseCase,
-                                   DeleteKnowledgeBaseUseCase deleteUseCase) {
+                                   DeleteKnowledgeBaseUseCase deleteUseCase,
+                                   ListKnowledgeBaseUseCase listUseCase) {
         this.createUseCase = createUseCase;
         this.deleteUseCase = deleteUseCase;
+        this.listUseCase = listUseCase;
     }
 
     /**
@@ -51,6 +57,25 @@ public class KnowledgeBaseController {
                     id.value(), request.name(), request.description(), Instant.now()
             );
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 列出所有知识库。
+     *
+     * @return 知识库列表，按创建时间倒序排列
+     */
+    @GetMapping
+    public Mono<List<KnowledgeBaseResponse>> list() {
+        return Mono.fromCallable(() ->
+                listUseCase.listAll().stream()
+                        .map(kb -> new KnowledgeBaseResponse(
+                                kb.getId().value(),
+                                kb.getName(),
+                                kb.getDescription(),
+                                kb.getCreatedAt()
+                        ))
+                        .toList()
+        ).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**

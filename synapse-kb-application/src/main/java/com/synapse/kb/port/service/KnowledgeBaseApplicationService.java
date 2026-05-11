@@ -29,6 +29,7 @@ import java.util.List;
 public class KnowledgeBaseApplicationService implements
         CreateKnowledgeBaseUseCase,
         DeleteKnowledgeBaseUseCase,
+        ListKnowledgeBaseUseCase,
         IngestDocumentUseCase,
         ListDocumentUseCase,
         DeleteDocumentUseCase,
@@ -106,6 +107,18 @@ public class KnowledgeBaseApplicationService implements
         KnowledgeBase kb = KnowledgeBase.create(command.name(), command.description());
         // 保存到仓储（MongoDB 适配器负责实际的持久化）
         return knowledgeBaseRepository.save(kb).getId();
+    }
+
+    /**
+     * 列出所有知识库。
+     *
+     * <p>直接调用仓储层的 findAll()，按创建时间倒序返回。
+     *
+     * @return 知识库列表
+     */
+    @Override
+    public List<KnowledgeBase> listAll() {
+        return knowledgeBaseRepository.findAll();
     }
 
     /**
