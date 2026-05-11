@@ -44,6 +44,22 @@ public class KnowledgeBase {
         return new KnowledgeBase(KnowledgeBaseId.generate(), name, description, Instant.now());
     }
 
+    /**
+     * 仅供仓储层重建聚合根使用。业务代码不应直接调用。
+     *
+     * <p>从持久化存储（如 MongoDB）读取数据后，通过此方法还原领域对象，
+     * 保留原有的 ID 和时间戳，不触发新的生成逻辑。
+     *
+     * @param id          知识库唯一标识
+     * @param name        名称
+     * @param description 描述
+     * @param createdAt   创建时间
+     * @return 重建后的知识库实例
+     */
+    public static KnowledgeBase reconstruct(KnowledgeBaseId id, String name, String description, Instant createdAt) {
+        return new KnowledgeBase(id, name, description, createdAt);
+    }
+
     public KnowledgeBaseId getId() {
         return id;
     }

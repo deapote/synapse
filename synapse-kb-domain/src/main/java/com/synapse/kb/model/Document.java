@@ -68,6 +68,50 @@ public class Document {
     }
 
     /**
+     * 仅供仓储层重建聚合根使用。业务代码不应直接调用。
+     *
+     * <p>从持久化存储读取数据后，通过此方法完整还原领域对象的所有状态，
+     * 包括处理状态、失败原因、分块数量和时间戳。使用直接字段赋值以避免
+     * {@link #transitionTo} 的副作用（如覆盖 processingStartAt）。
+     *
+     * @param id                     文档唯一标识
+     * @param knowledgeBaseId        所属知识库 ID
+     * @param fileName               文件名
+     * @param fileType               文件类型
+     * @param fileSize               文件大小（字节）
+     * @param contentHash            内容哈希
+     * @param uploadedAt             上传时间
+     * @param status                 处理状态
+     * @param failureReason          失败原因
+     * @param chunkCount             分块数量
+     * @param processingStartAt      处理开始时间
+     * @param processingCompleteAt   处理完成时间
+     * @return 重建后的文档实例
+     */
+    public static Document reconstruct(
+            DocumentId id,
+            KnowledgeBaseId knowledgeBaseId,
+            String fileName,
+            String fileType,
+            long fileSize,
+            String contentHash,
+            Instant uploadedAt,
+            DocumentStatus status,
+            String failureReason,
+            int chunkCount,
+            Instant processingStartAt,
+            Instant processingCompleteAt) {
+
+        Document doc = new Document(id, knowledgeBaseId, fileName, fileType, fileSize, contentHash, uploadedAt);
+        doc.status = status;
+        doc.failureReason = failureReason;
+        doc.chunkCount = chunkCount;
+        doc.processingStartAt = processingStartAt;
+        doc.processingCompleteAt = processingCompleteAt;
+        return doc;
+    }
+
+    /**
      * 转换文档处理状态。
      *
      * @param newStatus 目标状态
