@@ -195,11 +195,21 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public DocumentId ingest(IngestDocumentCommand command) {
-        // Step 1: 去重。同一知识库中，相同文件内容（通过哈希判断）不能重复上传
-        if (documentRepository.existsByKnowledgeBaseIdAndContentHash(
+        // Step 1: 去重与失败清理。
+        // 同一知识库中，查询相同哈希的所有文档记录
+        List<Document> existingDocs = documentRepository.findByKnowledgeBaseIdAndContentHash(
                 command.knowledgeBaseId(), command.contentHash()
-        )) {
-            throw new DomainException("此知识库已存在相同内容的文档");
+        );
+        for (Document existing : existingDocs) {
+            // 已完成或正在处理的文档：不允许重复上传
+            if (existing.getStatus() == DocumentStatus.COMPLETED || existing.getStatus() == DocumentStatus.PROCESSING) {
+                throw new DomainException("此知识库已存在相同内容的文档");
+            }
+            // 失败文档：清理残留数据（向量 + 元数据），允许重新上传
+            if (existing.getStatus() == DocumentStatus.FAILED) {
+                vectorStorePort.deleteByDocumentId(existing.getKnowledgeBaseId(), existing.getId());
+                documentRepository.deleteById(existing.getId());
+            }
         }
 
         // Step 2: 创建领域对象。Document.create 是工厂方法，会自动设置状态为 PENDING

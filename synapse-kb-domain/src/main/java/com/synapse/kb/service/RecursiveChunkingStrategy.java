@@ -17,6 +17,9 @@ import java.util.List;
  */
 public class RecursiveChunkingStrategy {
 
+    /** 单文档最大允许字符数，防止超大文本导致 OOM（1000 万字符 ≈ 20 MB UTF-16） */
+    private static final int MAX_TEXT_LENGTH = 10_000_000;
+
     /** 单个块的最大字符数 */
     private final int maxSegmentSize;
     /** 相邻块之间的重叠字符数，用于保留跨边界语义 */
@@ -59,6 +62,11 @@ public class RecursiveChunkingStrategy {
         if (text == null || text.isBlank()) {
             return List.of();
         }
+        if (text.length() > MAX_TEXT_LENGTH) {
+            throw new DomainException(
+                    "文本过长，无法分块：当前 " + text.length() + " 字符，最大允许 " + MAX_TEXT_LENGTH + " 字符。" +
+                    "请拆分文档后重新上传。");
+        }
 
         List<DocumentChunk> chunks = new ArrayList<>();
         int index = 0;       // 块序号，从 0 递增
@@ -77,11 +85,12 @@ public class RecursiveChunkingStrategy {
 
             index++;
             // 下一轮的起点回退 overlap 大小，保证相邻块有重叠
-            position = breakPoint - maxOverlapSize;
-            // 防御：overlap 过大导致未前进时，强制前进到断点位置
-            if (position <= breakPoint - maxSegmentSize) {
-                position = breakPoint;
+            int nextPosition = breakPoint - maxOverlapSize;
+            // 防御：必须保证严格前进，防止死循环或无限递归
+            if (nextPosition <= position) {
+                nextPosition = breakPoint;
             }
+            position = nextPosition;
         }
         return chunks;
     }

@@ -10,4 +10,6 @@ public interface DocumentMongoRepository extends ReactiveMongoRepository<Documen
     Flux<DocumentDocument> findByKnowledgeBaseId(String knowledgeBaseId);
 
     Mono<Boolean> existsByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
+
+    Flux<DocumentDocument> findByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
 }

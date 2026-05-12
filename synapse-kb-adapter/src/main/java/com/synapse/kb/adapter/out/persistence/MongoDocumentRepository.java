@@ -62,6 +62,16 @@ public class MongoDocumentRepository implements DocumentRepository {
         );
     }
 
+    @Override
+    public List<Document> findByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) {
+        return documentMongoRepository.findByKnowledgeBaseIdAndContentHash(
+                        knowledgeBaseId.value(), contentHash
+                )
+                .toStream()
+                .map(this::toEntity)
+                .toList();
+    }
+
     /**
      * 将领域对象转换为 MongoDB 文档实体。
      */

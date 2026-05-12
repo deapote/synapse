@@ -54,4 +54,15 @@ public interface DocumentRepository {
      * @return 存在返回 {@code true}，否则 {@code false}
      */
     boolean existsByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash);
+
+    /**
+     * 查询指定知识库下内容哈希匹配的所有文档。
+     *
+     * <p>用于判断是否可以重新上传（如失败重试场景）。
+     *
+     * @param knowledgeBaseId 知识库唯一标识
+     * @param contentHash     文件内容哈希
+     * @return 匹配的文档列表，无数据时返回空列表
+     */
+    List<Document> findByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash);
 }
