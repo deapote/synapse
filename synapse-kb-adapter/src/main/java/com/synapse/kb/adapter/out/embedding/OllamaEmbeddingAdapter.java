@@ -2,9 +2,12 @@ package com.synapse.kb.adapter.out.embedding;
 
 import com.synapse.kb.port.out.EmbeddingPort;
 import com.synapse.shared.exception.DomainException;
+import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.ollama.OllamaEmbeddingModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * Ollama 文本向量化适配器。
@@ -45,6 +48,21 @@ public class OllamaEmbeddingAdapter implements EmbeddingPort {
             return embeddingModel.embed(text).content().vector();
         } catch (Exception e) {
             throw new DomainException("文本向量化失败", e);
+        }
+    }
+
+    @Override
+    public List<float[]> embed(List<String> texts) {
+        try {
+            List<TextSegment> segments = texts.stream()
+                    .map(TextSegment::from)
+                    .toList();
+
+            return embeddingModel.embedAll(segments).content().stream()
+                    .map(embedding -> embedding.vector())
+                    .toList();
+        } catch (Exception e) {
+            throw new DomainException("批量文本向量化失败", e);
         }
     }
 }
