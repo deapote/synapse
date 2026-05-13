@@ -5,6 +5,7 @@ import { useKnowledgeBaseStore } from '@/stores/knowledgeBase'
 import { useChatStore } from '@/stores/chat'
 import {
   Send,
+  Square,
   Bot,
   User,
   BookOpen,
@@ -59,7 +60,7 @@ function scrollToBottom() {
   })
 }
 
-async function handleSend() {
+function handleSend() {
   const text = inputText.value.trim()
   if (!text || chatStore.loading) return
 
@@ -69,8 +70,12 @@ async function handleSend() {
   }
 
   inputText.value = ''
-  await chatStore.sendQuestion(kbId.value, text)
+  chatStore.sendQuestionStream(kbId.value, text)
   scrollToBottom()
+}
+
+function handleStop() {
+  chatStore.stopGeneration()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -140,6 +145,14 @@ function formatReferenceNumber(index: number): string {
           <div class="message-content">
             <div class="message-text">{{ msg.content }}</div>
 
+            <!-- Thinking indicator: shown when assistant message is empty (before first token arrives) -->
+            <div v-if="msg.role === 'assistant' && !msg.content" class="thinking-hint">
+              <span class="thinking-dot" />
+              <span class="thinking-dot" />
+              <span class="thinking-dot" />
+              <span class="thinking-label">正在思考</span>
+            </div>
+
             <!-- References -->
             <div v-if="msg.references && msg.references.length > 0" class="references">
               <div
@@ -160,7 +173,7 @@ function formatReferenceNumber(index: number): string {
       </div>
 
       <!-- Loading indicator -->
-      <div v-if="chatStore.loading" class="message assistant">
+      <div v-if="chatStore.loading && !chatStore.streaming" class="message assistant">
         <div class="message-inner">
           <div class="message-avatar">
             <Bot :size="16" />
@@ -194,6 +207,14 @@ function formatReferenceNumber(index: number): string {
           }"
         />
         <button
+          v-if="chatStore.streaming"
+          class="send-btn stop-btn"
+          @click="handleStop"
+        >
+          <Square :size="16" />
+        </button>
+        <button
+          v-else
           class="send-btn"
           :disabled="!inputText.trim() || chatStore.loading || !kbId"
           @click="handleSend"
@@ -557,6 +578,50 @@ function formatReferenceNumber(index: number): string {
 .send-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* Thinking hint: shown inside assistant message before first token arrives */
+.thinking-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.thinking-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.thinking-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: thinking-pulse 1.4s infinite ease-in-out both;
+}
+
+.thinking-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes thinking-pulse {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .input-hint {

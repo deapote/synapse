@@ -6,6 +6,7 @@ import com.synapse.kb.port.service.KnowledgeBaseApplicationService;
 import com.synapse.kb.repository.DocumentRepository;
 import com.synapse.kb.repository.KnowledgeBaseRepository;
 import com.synapse.kb.service.RecursiveChunkingStrategy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -21,7 +22,7 @@ import org.springframework.context.annotation.Configuration;
  *   <li>{@code MongoDocumentRepository} — {@code @Component}</li>
  *   <li>{@code ApacheTikaDocumentParserAdapter} — {@code @Component}</li>
  *   <li>{@code OllamaEmbeddingAdapter} — {@code @Component}</li>
- *   <li>{@code OllamaLlmAdapter} — {@code @Component}</li>
+ *   <li>{@code OllamaStreamingLlmAdapter} — {@code @Component}</li>
  *   <li>{@code MilvusVectorStoreAdapter} — {@code @Component}</li>
  *   <li>所有 Controller — {@code @RestController}</li>
  * </ul>
@@ -50,6 +51,8 @@ public class KnowledgeBaseBeanConfig {
      * @param recursiveChunkingStrategy 分块策略（上方手动创建的 Bean）
      * @param embeddingPort             向量化端口（Ollama 实现）
      * @param vectorStorePort           向量存储端口（Milvus 实现）
+     * @param promptTemplate            RAG prompt 模板（从配置读取）
+     * @param topK                      向量检索 topK（从配置读取）
      * @return 应用服务实例
      */
     @Bean
@@ -59,7 +62,9 @@ public class KnowledgeBaseBeanConfig {
             DocumentParserPort documentParserPort,
             RecursiveChunkingStrategy recursiveChunkingStrategy,
             EmbeddingPort embeddingPort,
-            VectorStorePort vectorStorePort
+            VectorStorePort vectorStorePort,
+            @Value("${synapse.rag.prompt-template:基于以下上下文回答问题。如果上下文中没有相关信息，请准确说明。\n\n上下文:\n%s\n\n问题:%s\n\n回答: }") String promptTemplate,
+            @Value("${synapse.rag.top-k:5}") int topK
     ) {
         return new KnowledgeBaseApplicationService(
                 knowledgeBaseRepository,
@@ -67,7 +72,9 @@ public class KnowledgeBaseBeanConfig {
                 documentParserPort,
                 recursiveChunkingStrategy,
                 embeddingPort,
-                vectorStorePort
+                vectorStorePort,
+                promptTemplate,
+                topK
         );
     }
 }

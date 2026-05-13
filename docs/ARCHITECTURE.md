@@ -53,7 +53,7 @@ synapse/
 |------|------|----------|
 | `VectorStorePort` | 向量存储与检索 | `MilvusVectorStoreAdapter` |
 | `EmbeddingPort` | 文本向量化 | `OllamaEmbeddingAdapter` |
-| `LlmPort` | LLM 文本生成 | `OllamaLlmAdapter` |
+| `StreamingLlmPort` | LLM 流式文本生成 | `OllamaStreamingLlmAdapter` |
 | `DocumentParserPort` | 文档解析为纯文本 | `ApacheTikaDocumentParserAdapter` |
 | `KnowledgeBaseRepository` | 知识库元数据持久化 | `MongoKnowledgeBaseRepository` |
 | `DocumentRepository` | 文档元数据持久化 | `MongoDocumentRepository` |
@@ -85,13 +85,13 @@ KnowledgeBaseApplicationService
         +-- DocumentRepository.save() → MongoDB（状态 COMPLETED/FAILED）
 ```
 
-### 4.2 问答流程（非流式）
+### 4.2 问答流程（SSE 流式）
 
 ```
 用户提问
     |
     v
-QueryController.query()
+StreamingQueryController.queryStream() — SSE 端点
     |
     v
 QueryKnowledgeBaseUseCase.prepare()
@@ -103,10 +103,10 @@ QueryKnowledgeBaseUseCase.prepare()
 RagContext（prompt + references）
     |
     v
-LlmPort.generate() → OllamaLlmAdapter
+StreamingLlmPort.generateStream() → OllamaStreamingLlmAdapter
     |
     v
-AnswerResponse（answer + references）
+SSE 事件流：token → token → ... → references → complete
 ```
 
 ## 5. API 端点
@@ -119,7 +119,7 @@ AnswerResponse（answer + references）
 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
 | GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档 |
 | DELETE | `/api/documents/{id}` | 删除文档 |
-| POST | `/api/knowledge-bases/{kbId}/query` | 知识库问答 |
+| POST | `/api/knowledge-bases/{kbId}/query/stream` | 知识库流式问答（SSE） |
 
 ### 错误响应格式
 
@@ -167,4 +167,4 @@ FAILED --(retry)--> PENDING
 - **用户权限**：后续新增 `synapse-auth` bounded context，通过 Anti-Corruption Layer 与知识库交互。
 - **多 Embedding 模型**：新增 `EmbeddingPort` 的实现即可，无需改动应用层。
 - **混合搜索**：向量搜索 + 关键词搜索（BM25），在 `VectorStorePort` 中扩展接口。
-- **SSE 流式输出**：当前为同步问答，后续可在 `QueryController` 中增加 SSE 端点。
+- **流式输出**：已通过 SSE 实现，支持逐字推送和取消生成。

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/query'
-import type { ChatMessage } from '@/types'
+import type { ChatMessage, ChunkReference } from '@/types'
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10)
@@ -11,11 +11,24 @@ export const useChatStore = defineStore('chat', () => {
   // State
   const messages = ref<ChatMessage[]>([])
   const loading = ref(false)
+  const streaming = ref(false)
   const error = ref<string | null>(null)
 
+  // 当前流式请求的 AbortController
+  let currentAbortCtrl: AbortController | null = null
+
+  // 当前 generation，用于丢弃过期回调（竞态防护）
+  let currentGeneration = 0
+
   // Actions
-  async function sendQuestion(knowledgeBaseId: string, query: string) {
-    // Add user message
+
+  /**
+   * 发送问题（流式模式）。
+   */
+  function sendQuestionStream(knowledgeBaseId: string, query: string) {
+    const generation = ++currentGeneration
+
+    // 添加用户消息
     const userMessage: ChatMessage = {
       id: generateId(),
       role: 'user',
@@ -24,40 +37,88 @@ export const useChatStore = defineStore('chat', () => {
     }
     messages.value.push(userMessage)
 
+    // 添加空的助手消息（待流式填充）
+    const assistantMessage: ChatMessage = {
+      id: generateId(),
+      role: 'assistant',
+      content: '',
+      references: [],
+      createdAt: Date.now()
+    }
+    messages.value.push(assistantMessage)
+
+    streaming.value = true
     loading.value = true
     error.value = null
 
-    try {
-      const response = await api.queryKnowledgeBase(knowledgeBaseId, query)
+    currentAbortCtrl = api.streamQueryKnowledgeBase(knowledgeBaseId, query, {
+      onToken: (token: string) => {
+        if (generation !== currentGeneration) return
+        const lastMsg = messages.value[messages.value.length - 1]
+        if (lastMsg?.role === 'assistant') {
+          lastMsg.content += token
+        }
+      },
 
-      const assistantMessage: ChatMessage = {
-        id: generateId(),
-        role: 'assistant',
-        content: response.answer,
-        references: response.references,
-        createdAt: Date.now()
+      onReferences: (references: ChunkReference[]) => {
+        if (generation !== currentGeneration) return
+        const lastMsg = messages.value[messages.value.length - 1]
+        if (lastMsg?.role === 'assistant') {
+          lastMsg.references = references
+        }
+      },
+
+      onComplete: () => {
+        if (generation !== currentGeneration) return
+        streaming.value = false
+        loading.value = false
+        currentAbortCtrl = null
+      },
+
+      onError: (errMsg: string) => {
+        if (generation !== currentGeneration) return
+        streaming.value = false
+        loading.value = false
+        error.value = errMsg
+
+        const lastMsg = messages.value[messages.value.length - 1]
+        if (lastMsg?.role === 'assistant' && !lastMsg.content) {
+          lastMsg.content = `生成失败：${errMsg}`
+        }
+        currentAbortCtrl = null
       }
-      messages.value.push(assistantMessage)
-      return response
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : '问答请求失败'
-      // Add error message as assistant
-      const errorMessage: ChatMessage = {
-        id: generateId(),
-        role: 'assistant',
-        content: `请求失败：${error.value}`,
-        createdAt: Date.now()
-      }
-      messages.value.push(errorMessage)
-      throw err
-    } finally {
-      loading.value = false
+    })
+  }
+
+  /**
+   * 停止生成。
+   */
+  function stopGeneration() {
+    currentGeneration++
+    if (currentAbortCtrl) {
+      currentAbortCtrl.abort()
+      currentAbortCtrl = null
+    }
+    streaming.value = false
+    loading.value = false
+
+    // 如果最后一条 assistant 消息内容为空，标记为已停止
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg?.role === 'assistant' && !lastMsg.content) {
+      lastMsg.content = '已停止生成'
     }
   }
 
   function clearHistory() {
+    currentGeneration++
     messages.value = []
     error.value = null
+    streaming.value = false
+    loading.value = false
+    if (currentAbortCtrl) {
+      currentAbortCtrl.abort()
+      currentAbortCtrl = null
+    }
   }
 
   function initWelcome(knowledgeBaseName?: string) {
@@ -76,8 +137,10 @@ export const useChatStore = defineStore('chat', () => {
   return {
     messages,
     loading,
+    streaming,
     error,
-    sendQuestion,
+    sendQuestionStream,
+    stopGeneration,
     clearHistory,
     initWelcome
   }

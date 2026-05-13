@@ -42,11 +42,6 @@ export interface ChunkReference {
   endPosition: number
 }
 
-export interface AnswerResponse {
-  answer: string
-  references: ChunkReference[]
-}
-
 // ========== API 错误 ==========
 
 export interface ApiError {

@@ -66,6 +66,16 @@ public class KnowledgeBaseApplicationService implements
     private final VectorStorePort vectorStorePort;
 
     /**
+     * LLM prompt 模板，需包含两个 {@code %s} 占位符（上下文、问题）
+     */
+    private final String promptTemplate;
+
+    /**
+     * 向量检索 topK：返回相似度最高的文档片段数量
+     */
+    private final int topK;
+
+    /**
      * 构造应用服务，所有依赖通过构造函数注入。
      *
      * @param knowledgeBaseRepository    知识库仓储
@@ -74,6 +84,8 @@ public class KnowledgeBaseApplicationService implements
      * @param recursiveChunkingStrategy  分块策略
      * @param embeddingPort              向量化端口
      * @param vectorStorePort            向量存储端口
+     * @param promptTemplate             LLM prompt 模板（两个 %s 占位符）
+     * @param topK                       向量检索返回数量
      */
     public KnowledgeBaseApplicationService(
             KnowledgeBaseRepository knowledgeBaseRepository,
@@ -81,7 +93,9 @@ public class KnowledgeBaseApplicationService implements
             DocumentParserPort documentParserPort,
             RecursiveChunkingStrategy recursiveChunkingStrategy,
             EmbeddingPort embeddingPort,
-            VectorStorePort vectorStorePort
+            VectorStorePort vectorStorePort,
+            String promptTemplate,
+            int topK
     ) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
@@ -89,6 +103,8 @@ public class KnowledgeBaseApplicationService implements
         this.recursiveChunkingStrategy = recursiveChunkingStrategy;
         this.embeddingPort = embeddingPort;
         this.vectorStorePort = vectorStorePort;
+        this.promptTemplate = promptTemplate;
+        this.topK = topK;
     }
 
     // ========================== 知识库管理 ==========================
@@ -330,11 +346,7 @@ public class KnowledgeBaseApplicationService implements
      *   <li>把 prompt 和引用来源打包成 {@link RagContext} 返回</li>
      * </ol>
      *
-     * <p>返回的 RagContext 交给适配器层：
-     * <ul>
-     *   <li>同步模式：直接用 LlmPort.generate(prompt) 生成完整回答</li>
-     *   <li>流式模式（SSE）：用 StreamingLlmService 逐字推送 token，最后发 references</li>
-     * </ul>
+     * <p>返回的 RagContext 交给适配器层，通过 SSE 流式逐字推送 token，最后发 references。
      *
      * @param query 用户查询，包含知识库 ID 和查询文本
      * @return 包含组装后 prompt 和引用来源的检索上下文
@@ -345,13 +357,12 @@ public class KnowledgeBaseApplicationService implements
         // 这样"什么是 Spring Boot"和"Spring Boot 是什么"会有相似的向量
         float[] queryEmbedding = embeddingPort.embed(query.text());
 
-        // Step 2: 向量相似度检索，找出最相关的 5 个文档片段
+        // Step 2: 向量相似度检索，找出最相关的 topK 个文档片段
         // new KnowledgeBaseId(...)：Query 中的 knowledgeBaseId 是 String，转成值对象
-        // topK=5：返回相似度最高的 5 条结果，按相似度降序排列
         List<ChunkSearchResult> results = vectorStorePort.search(
                 new KnowledgeBaseId(query.knowledgeBaseId()),
                 queryEmbedding,
-                5
+                topK
         );
 
         // Step 3: 组装上下文文本和引用来源列表
@@ -377,13 +388,8 @@ public class KnowledgeBaseApplicationService implements
             ));
         }
 
-        // Step 4: 组装 LLM prompt
-        // 给 LLM 的指令：基于提供的上下文回答问题，如果不知道就老实承认
-        String prompt = String.format(
-                "基于以下上下文回答问题。如果上下文中没有相关信息，请准确说明。\n\n" +
-                        "上下文:\n%s\n\n" +
-                        "问题:%s\n\n" +
-                        "回答: ",
+        // Step 4: 组装 LLM prompt（模板通过构造函数注入，便于外部配置）
+        String prompt = String.format(promptTemplate,
                 contextBuilder.toString(),  // 拼接好的检索上下文
                 query.text()                // 用户的原始问题
         );
