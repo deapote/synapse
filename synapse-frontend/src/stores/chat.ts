@@ -20,6 +20,43 @@ export const useChatStore = defineStore('chat', () => {
   // 当前 generation，用于丢弃过期回调（竞态防护）
   let currentGeneration = 0
 
+  // 流式 token 缓冲与定时刷新（解决 Vue 批量更新导致第一次无打字机效果的问题）
+  let tokenBuffer = ''
+  let flushTimer: ReturnType<typeof setInterval> | null = null
+
+  /**
+   * 将缓冲区中的 token 批量刷新到最后一条 assistant 消息。
+   */
+  function flushTokens() {
+    if (!tokenBuffer) return
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg?.role === 'assistant') {
+      lastMsg.content += tokenBuffer
+    }
+    tokenBuffer = ''
+  }
+
+  /**
+   * 启动 token 定时刷新器（每 40ms 刷新一次，确保打字机效果）。
+   */
+  function startFlushTimer() {
+    if (flushTimer) return
+    flushTimer = setInterval(() => {
+      flushTokens()
+    }, 40)
+  }
+
+  /**
+   * 停止 token 定时刷新器并清空缓冲。
+   */
+  function stopFlushTimer() {
+    if (flushTimer) {
+      clearInterval(flushTimer)
+      flushTimer = null
+    }
+    tokenBuffer = ''
+  }
+
   // Actions
 
   /**
@@ -50,18 +87,18 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = true
     loading.value = true
     error.value = null
+    stopFlushTimer()
 
     currentAbortCtrl = api.streamQueryKnowledgeBase(knowledgeBaseId, query, {
       onToken: (token: string) => {
         if (generation !== currentGeneration) return
-        const lastMsg = messages.value[messages.value.length - 1]
-        if (lastMsg?.role === 'assistant') {
-          lastMsg.content += token
-        }
+        tokenBuffer += token
+        startFlushTimer()
       },
 
       onReferences: (references: ChunkReference[]) => {
         if (generation !== currentGeneration) return
+        flushTokens()
         const lastMsg = messages.value[messages.value.length - 1]
         if (lastMsg?.role === 'assistant') {
           lastMsg.references = references
@@ -70,6 +107,8 @@ export const useChatStore = defineStore('chat', () => {
 
       onComplete: () => {
         if (generation !== currentGeneration) return
+        flushTokens()
+        stopFlushTimer()
         streaming.value = false
         loading.value = false
         currentAbortCtrl = null
@@ -77,6 +116,8 @@ export const useChatStore = defineStore('chat', () => {
 
       onError: (errMsg: string) => {
         if (generation !== currentGeneration) return
+        flushTokens()
+        stopFlushTimer()
         streaming.value = false
         loading.value = false
         error.value = errMsg
@@ -99,6 +140,7 @@ export const useChatStore = defineStore('chat', () => {
       currentAbortCtrl.abort()
       currentAbortCtrl = null
     }
+    stopFlushTimer()
     streaming.value = false
     loading.value = false
 
@@ -111,6 +153,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearHistory() {
     currentGeneration++
+    stopFlushTimer()
     messages.value = []
     error.value = null
     streaming.value = false
