@@ -25,7 +25,7 @@ synapse/
 │       ├── embedding/           # Ollama Embedding
 │       ├── llm/                 # Ollama LLM
 │       ├── parser/              # Apache Tika
-│       ├── persistence/         # MongoDB Reactive
+│       ├── persistence/         # MongoDB（同步驱动）
 │       └── vector/              # Milvus
 ├── synapse-kb-config/           # Spring Bean 组装配置
 │   └── config/KnowledgeBaseBeanConfig.java
@@ -40,10 +40,10 @@ synapse/
 | 端口 | 职责 |
 |------|------|
 | `CreateKnowledgeBaseUseCase` | 创建知识库 |
-| `ListKnowledgeBaseUseCase` | 列出所有知识库 |
-| `DeleteKnowledgeBaseUseCase` | 删除知识库（级联清理） |
+| `ListKnowledgeBaseUseCase` | 列出所有知识库，支持分页 |
+| `DeleteKnowledgeBaseUseCase` | 删除知识库（级联清理，带事务） |
 | `IngestDocumentUseCase` | 上传并处理文档 |
-| `ListDocumentUseCase` | 列出知识库下的文档 |
+| `ListDocumentUseCase` | 列出知识库下的文档，支持分页 |
 | `DeleteDocumentUseCase` | 删除文档（连带清理向量） |
 | `QueryKnowledgeBaseUseCase` | 检索 + 组装 prompt，返回 `RagContext` |
 
@@ -74,7 +74,7 @@ IngestDocumentUseCase.ingest()
     v
 KnowledgeBaseApplicationService
     |
-    +-- DocumentRepository.save() → MongoDB（状态 PENDING）
+    +-- DocumentRepository.save() → MongoDB 同步驱动（状态 PENDING）
     |
     +-- processDocument():
         |
@@ -114,10 +114,10 @@ SSE 事件流：token → token → ... → references → complete
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/knowledge-bases` | 创建知识库 |
-| GET | `/api/knowledge-bases` | 列出知识库 |
+| GET | `/api/knowledge-bases?page={page}&size={size}` | 列出知识库（支持分页） |
 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库（级联） |
 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
-| GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档 |
+| GET | `/api/knowledge-bases/{kbId}/documents?page={page}&size={size}` | 列出文档（支持分页） |
 | DELETE | `/api/documents/{id}` | 删除文档 |
 | POST | `/api/knowledge-bases/{kbId}/query/stream` | 知识库流式问答（SSE） |
 
@@ -143,15 +143,29 @@ PENDING --(ingest)--> PROCESSING --(success)--> COMPLETED
 FAILED --(retry)--> PENDING
 ```
 
-- `transitionTo()` 校验流转合法性
+- `transitionTo(DocumentStatus)` 校验流转合法性
+- `transitionTo(DocumentStatus, String failureReason)` 用于 FAILED 状态，同时记录失败原因
 - PROCESSING → COMPLETED/FAILED 时自动记录时间戳
+- 删除知识库操作标注 `@Transactional`，确保 MongoDB 元数据与 Milvus 向量数据一致性（需副本集模式）
+
+### 值对象
+
+| 类 | 说明 |
+|:---|:---|
+| `DocumentChunk` | 文档分块（index, text, startPosition, endPosition） |
+| `Query` | 用户查询（`KnowledgeBaseId knowledgeBaseId`, `String text`） |
+| `RagContext` | 检索上下文（prompt + `List<ChunkReference>`） |
+| `ChunkReference` | 引用来源（documentId, documentName, chunkText, score, position） |
 
 ### 关键设计决策
 
 1. **Document 是独立聚合根**：知识库可能包含成百上千个文档，作为内部实体会导致大聚合性能问题。
-2. **懒加载 Milvus 连接**：`MilvusVectorStoreAdapter` 不在构造函数中连接服务器，第一次使用时才初始化，避免启动依赖问题。
-3. **配置外部化**：所有 adapter 通过 `@Value` 读取 `application.yaml`，无硬编码。
-4. **filter 注入防护**：Milvus filter 字符串拼接前对值进行单引号转义。
+2. **同步 MongoDB 驱动**：使用 `spring-boot-starter-data-mongodb` 同步驱动 + `MongoRepository`，避免 Reactive 驱动混用 `.block()` 的反模式。
+3. **懒加载 Milvus 连接**：`MilvusVectorStoreAdapter` 不在构造函数中连接服务器，第一次使用时才初始化，避免启动依赖问题。
+4. **配置外部化**：所有 adapter 通过 `@Value` 读取 `application.yaml`，无硬编码。
+5. **filter 注入防护**：Milvus filter 字符串拼接前对值进行单引号转义。
+6. **虚拟线程隔离阻塞调用**：`OllamaStreamingLlmAdapter` 使用 `Thread.ofVirtual()` 包装 SSE 流推送，避免阻塞 WebFlux 事件循环。
+7. **CORS 安全**：允许所有来源但不携带凭证（`allowCredentials=false`），防止 CSRF 风险。
 
 ## 7. 外部依赖
 

@@ -26,10 +26,10 @@
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- Reactive MongoDB -->
+        <!-- Synchronous MongoDB -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-mongodb-reactive</artifactId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
         </dependency>
 
         <!-- LangChain4j -->
@@ -39,11 +39,12 @@
         </dependency>
         <dependency>
             <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-milvus</artifactId>
+            <artifactId>langchain4j-ollama</artifactId>
         </dependency>
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-ollama</artifactId>
+            <groupId>io.milvus</groupId>
+            <artifactId>milvus-sdk-java</artifactId>
+            <version>2.5.9</version>
         </dependency>
         <dependency>
             <groupId>dev.langchain4j</groupId>

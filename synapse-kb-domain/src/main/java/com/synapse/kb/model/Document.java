@@ -118,6 +118,10 @@ public class Document {
      * @throws DomainException 非法状态流转时抛出
      */
     public void transitionTo(DocumentStatus newStatus) {
+        transitionTo(newStatus, null);
+    }
+
+    public void transitionTo(DocumentStatus newStatus, String failureReason) {
         Set<DocumentStatus> validNext = VALID_TRANSITIONS.get(this.status);
         if (validNext == null || !validNext.contains(newStatus)) {
             throw new DomainException("无效的状态转换 " + this.status + "->" + newStatus);
@@ -129,10 +133,9 @@ public class Document {
         if (newStatus == DocumentStatus.COMPLETED || newStatus == DocumentStatus.FAILED) {
             this.processingCompleteAt = Instant.now();
         }
-    }
-
-    public void setFailureReason(String reason) {
-        this.failureReason = reason;
+        if (newStatus == DocumentStatus.FAILED && failureReason != null) {
+            this.failureReason = failureReason;
+        }
     }
 
     /**

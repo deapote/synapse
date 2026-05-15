@@ -38,6 +38,15 @@ public interface KnowledgeBaseRepository {
     List<KnowledgeBase> findAll();
 
     /**
+     * 分页查询所有知识库。
+     *
+     * @param page 页码，从 0 开始
+     * @param size 每页大小
+     * @return 知识库列表
+     */
+    List<KnowledgeBase> findAll(int page, int size);
+
+    /**
      * 根据 ID 删除知识库。
      *
      * @param id 知识库唯一标识

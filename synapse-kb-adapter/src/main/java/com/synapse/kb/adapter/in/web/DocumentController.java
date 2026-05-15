@@ -100,15 +100,21 @@ public class DocumentController {
     }
 
     /**
-     * 列出指定知识库下的所有文档。
+     * 列出指定知识库下的所有文档（支持分页）。
      *
      * @param kbId 知识库 ID
+     * @param page 页码，默认 0
+     * @param size 每页大小，默认 20
      * @return 文档列表
      */
     @GetMapping("/api/knowledge-bases/{kbId}/documents")
-    public Mono<List<DocumentResponse>> list(@PathVariable String kbId) {
+    public Mono<List<DocumentResponse>> list(
+            @PathVariable String kbId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size
+    ) {
         return Mono.fromCallable(() -> {
-            List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId));
+            List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId), page, size);
             return docs.stream()
                     .map(doc -> new DocumentResponse(
                             doc.getId().value(),

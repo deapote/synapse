@@ -70,9 +70,11 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
         AtomicReference<StreamingHandle> handleRef = new AtomicReference<>();
 
-        Thread thread = new Thread(() -> {
-            try {
-                streamingChatModel.chat(prompt, new StreamingChatResponseHandler() {
+        Thread thread = Thread.ofVirtual()
+                .name("ollama-streaming-" + System.currentTimeMillis())
+                .start(() -> {
+                    try {
+                        streamingChatModel.chat(prompt, new StreamingChatResponseHandler() {
                     /**
                      * 简版回调（无 {@link StreamingHandle}）。
                      * 若 LangChain4j 调用此重载，取消时无法直接中断 Ollama HTTP 连接，
@@ -106,14 +108,12 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                         errorRef.set(error);
                         queue.offer(POISON);
                     }
+                        });
+                    } catch (Exception e) {
+                        errorRef.set(e);
+                        queue.offer(POISON);
+                    }
                 });
-            } catch (Exception e) {
-                errorRef.set(e);
-                queue.offer(POISON);
-            }
-        }, "ollama-streaming-" + System.currentTimeMillis());
-        thread.setDaemon(true);
-        thread.start();
 
         Iterator<String> iterator = new Iterator<>() {
             Object next = null;

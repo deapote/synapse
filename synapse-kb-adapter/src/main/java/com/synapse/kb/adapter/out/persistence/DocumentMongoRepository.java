@@ -1,15 +1,18 @@
 package com.synapse.kb.adapter.out.persistence;
 
 import com.synapse.kb.adapter.out.persistence.entity.DocumentDocument;
-import org.springframework.data.mongodb.repository.ReactiveMongoRepository;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.mongodb.repository.MongoRepository;
 
-public interface DocumentMongoRepository extends ReactiveMongoRepository<DocumentDocument, String> {
+import java.util.List;
 
-    Flux<DocumentDocument> findByKnowledgeBaseId(String knowledgeBaseId);
+public interface DocumentMongoRepository extends MongoRepository<DocumentDocument, String> {
 
-    Mono<Boolean> existsByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
+    List<DocumentDocument> findByKnowledgeBaseId(String knowledgeBaseId);
 
-    Flux<DocumentDocument> findByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
+    List<DocumentDocument> findByKnowledgeBaseId(String knowledgeBaseId, Pageable pageable);
+
+    boolean existsByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
+
+    List<DocumentDocument> findByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
 }

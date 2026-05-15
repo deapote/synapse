@@ -7,6 +7,8 @@ spring:
   data:
     mongodb:
       uri: mongodb://localhost:27017/synapse_kb
+      repositories:
+        type: imperative
 
 synapse:
   rag:

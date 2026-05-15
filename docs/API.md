@@ -40,10 +40,10 @@
 | 序号 | 方法 | 路径 | 说明 |
 |:---|:---|:---|:---|
 | 1 | POST | `/api/knowledge-bases` | 创建知识库 |
-| 2 | GET | `/api/knowledge-bases` | 列出知识库 |
+| 2 | GET | `/api/knowledge-bases?page={page}&size={size}` | 列出知识库（支持分页） |
 | 3 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库 |
 | 4 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
-| 5 | GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档 |
+| 5 | GET | `/api/knowledge-bases/{kbId}/documents?page={page}&size={size}` | 列出文档（支持分页） |
 | 6 | DELETE | `/api/documents/{id}` | 删除文档 |
 | 7 | POST | `/api/knowledge-bases/{kbId}/query` | 知识库问答 |
 
@@ -107,8 +107,15 @@ Content-Type: application/json
 **请求**
 
 ```http
-GET /api/knowledge-bases
+GET /api/knowledge-bases?page=0&size=20
 ```
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|:---|:---|:---|:---|
+| `page` | integer | 否 | 页码，从 0 开始，默认 0 |
+| `size` | integer | 否 | 每页数量，默认 20 |
 
 **响应**
 
@@ -222,7 +229,7 @@ Content-Type: multipart/form-data
 **请求**
 
 ```http
-GET /api/knowledge-bases/{kbId}/documents
+GET /api/knowledge-bases/{kbId}/documents?page=0&size=20
 ```
 
 **路径参数**
@@ -230,6 +237,13 @@ GET /api/knowledge-bases/{kbId}/documents
 | 参数 | 类型 | 说明 |
 |:---|:---|:---|
 | `kbId` | string | 知识库唯一标识 |
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|:---|:---|:---|:---|
+| `page` | integer | 否 | 页码，从 0 开始，默认 0 |
+| `size` | integer | 否 | 每页数量，默认 20 |
 
 **响应**
 
@@ -434,10 +448,7 @@ Content-Type: application/json
 
 ### 6.1 跨域（CORS）
 
-如果前端独立部署（如 `localhost:3000`），需确认后端已开启 CORS。当前后端未显式配置 CORS，独立部署时可能需要：
-
-- 前端开发时代理到 `localhost:8082`
-- 或后端添加 `@CrossOrigin` / `CorsWebFilter` 配置
+后端已配置 CORS（`CorsWebFilter`），允许所有来源访问，但**不携带凭证**（`allowCredentials=false`）。生产环境建议收紧为具体域名。
 
 ### 6.2 文件上传
 

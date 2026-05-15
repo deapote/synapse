@@ -32,13 +32,12 @@ public class ApacheTikaDocumentParserAdapter implements DocumentParserPort {
      */
     @Override
     public String parse(InputStream inputStream, String fileName) {
-        try {
-            Document document = parser.parse(inputStream);
+        try (InputStream is = inputStream) {
+            Document document = parser.parse(is);
             String text = document.text();
             return text != null ? text : "";
         } catch (Exception e) {
             throw new DomainException("文档解析失败: " + fileName, e);
         }
-
     }
 }

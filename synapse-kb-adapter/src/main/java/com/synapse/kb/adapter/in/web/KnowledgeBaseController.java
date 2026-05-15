@@ -60,14 +60,19 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 列出所有知识库。
+     * 列出所有知识库（支持分页）。
      *
+     * @param page 页码，默认 0
+     * @param size 每页大小，默认 20
      * @return 知识库列表，按创建时间倒序排列
      */
     @GetMapping
-    public Mono<List<KnowledgeBaseResponse>> list() {
+    public Mono<List<KnowledgeBaseResponse>> list(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size
+    ) {
         return Mono.fromCallable(() ->
-                listUseCase.listAll().stream()
+                listUseCase.listAll(page, size).stream()
                         .map(kb -> new KnowledgeBaseResponse(
                                 kb.getId().value(),
                                 kb.getName(),

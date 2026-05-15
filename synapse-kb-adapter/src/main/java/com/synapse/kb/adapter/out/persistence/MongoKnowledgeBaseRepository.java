@@ -4,6 +4,8 @@ import com.synapse.kb.adapter.out.persistence.entity.KnowledgeBaseDocument;
 import com.synapse.kb.model.KnowledgeBase;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.repository.KnowledgeBaseRepository;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -21,28 +23,37 @@ public class MongoKnowledgeBaseRepository implements KnowledgeBaseRepository {
     @Override
     public KnowledgeBase save(KnowledgeBase knowledgeBase) {
         KnowledgeBaseDocument doc = toDocument(knowledgeBase);
-        KnowledgeBaseDocument saved = mongoRepository.save(doc).block();
+        KnowledgeBaseDocument saved = mongoRepository.save(doc);
         return toEntity(saved);
     }
 
     @Override
     public Optional<KnowledgeBase> findById(KnowledgeBaseId id) {
         return mongoRepository.findById(id.value())
-                .blockOptional()
                 .map(this::toEntity);
     }
 
     @Override
     public List<KnowledgeBase> findAll() {
         return mongoRepository.findAll()
-                .toStream()
+                .stream()
+                .map(this::toEntity)
+                .toList();
+    }
+
+    @Override
+    public List<KnowledgeBase> findAll(int page, int size) {
+        return mongoRepository.findAllBy(
+                        PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
+                )
+                .stream()
                 .map(this::toEntity)
                 .toList();
     }
 
     @Override
     public void deleteById(KnowledgeBaseId id) {
-        mongoRepository.deleteById(id.value()).block();
+        mongoRepository.deleteById(id.value());
     }
 
     private KnowledgeBaseDocument toDocument(KnowledgeBase kb) {

@@ -19,4 +19,14 @@ public interface ListDocumentUseCase {
      * @return 文档列表，无数据时返回空列表
      */
     List<Document> listByKnowledgeBase(KnowledgeBaseId knowledgeBaseId);
+
+    /**
+     * 分页查询指定知识库下的文档。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param page            页码，从 0 开始
+     * @param size            每页大小
+     * @return 文档列表
+     */
+    List<Document> listByKnowledgeBase(KnowledgeBaseId knowledgeBaseId, int page, int size);
 }

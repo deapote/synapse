@@ -137,6 +137,11 @@ public class KnowledgeBaseApplicationService implements
         return knowledgeBaseRepository.findAll();
     }
 
+    @Override
+    public List<KnowledgeBase> listAll(int page, int size) {
+        return knowledgeBaseRepository.findAll(page, size);
+    }
+
     /**
      * 删除知识库（级联删除）。
      *
@@ -194,6 +199,11 @@ public class KnowledgeBaseApplicationService implements
         return documentRepository.findByKnowledgeBaseId(knowledgeBaseId);
     }
 
+    @Override
+    public List<Document> listByKnowledgeBase(KnowledgeBaseId knowledgeBaseId, int page, int size) {
+        return documentRepository.findByKnowledgeBaseId(knowledgeBaseId, page, size);
+    }
+
     /**
      * 摄入文档（上传 + 完整处理）。
      *
@@ -245,22 +255,6 @@ public class KnowledgeBaseApplicationService implements
         processDocument(document, command.content());
 
         return document.getId();
-    }
-
-    /**
-     * 重新处理文档（用于失败重试）。
-     *
-     * <p>当前实现仅支持通过 {@link #ingest} 完成首次处理。
-     * 重试功能需要外部提供文件内容（如从对象存储读取），后续可扩展。
-     *
-     * @param documentId 文档 ID
-     * @throws DomainException 文档不存在或无法获取内容时抛出
-     */
-    public void processDocument(DocumentId documentId) {
-        Document document = documentRepository.findById(documentId)
-                .orElseThrow(() -> new DomainException("未找到文档: " + documentId.value()));
-        // 重试时需要外部传入文件内容，当前暂不支持直接调用
-        throw new DomainException("重试功能需要外部提供文件内容，请通过 ingest 接口处理新文档");
     }
 
     /**
@@ -317,10 +311,8 @@ public class KnowledgeBaseApplicationService implements
             document.transitionTo(DocumentStatus.COMPLETED);
 
         } catch (Exception e) {
-            // 记录失败原因（如"解析失败"、"Ollama 连接超时"等）
-            document.setFailureReason(e.getMessage());
-            // 状态流转：PROCESSING → FAILED
-            document.transitionTo(DocumentStatus.FAILED);
+            // 状态流转：PROCESSING → FAILED，同时记录失败原因
+            document.transitionTo(DocumentStatus.FAILED, e.getMessage());
             // 把异常继续抛出去，让上层（如 Controller）捕获并返回错误响应
             throw new DomainException("文档处理失败: " + e.getMessage(), e);
         } finally {
@@ -354,13 +346,12 @@ public class KnowledgeBaseApplicationService implements
     @Override
     public RagContext prepare(Query query) {
         // Step 1: 把用户的问题文本转成向量（1536 维浮点数组）
-        // 这样"什么是 Spring Boot"和"Spring Boot 是什么"会有相似的向量
         float[] queryEmbedding = embeddingPort.embed(query.text());
 
         // Step 2: 向量相似度检索，找出最相关的 topK 个文档片段
-        // new KnowledgeBaseId(...)：Query 中的 knowledgeBaseId 是 String，转成值对象
-        List<ChunkSearchResult> results = vectorStorePort.search(
-                new KnowledgeBaseId(query.knowledgeBaseId()),
+        // Query 中的 knowledgeBaseId 已经是 KnowledgeBaseId 值对象，无需转换
+        List<ChunkReference> results = vectorStorePort.search(
+                query.knowledgeBaseId(),
                 queryEmbedding,
                 topK
         );
@@ -370,32 +361,23 @@ public class KnowledgeBaseApplicationService implements
         List<ChunkReference> references = new ArrayList<>();
 
         for (int i = 0; i < results.size(); i++) {
-            // 取出第 i 个检索结果
-            ChunkSearchResult result = results.get(i);
+            ChunkReference result = results.get(i);
 
             // 把每条结果格式化为 "[1] 片段文本\n\n" 的形式
             contextBuilder.append("[").append(i + 1).append("] ")
                     .append(result.chunkText()).append("\n\n");
 
-            // 同时构建引用来源对象，后续返回给前端做来源展示和高亮定位
-            references.add(new ChunkReference(
-                    result.documentId(),      // 来源文档 ID
-                    result.documentName(),    // 来源文档文件名（从向量库元数据中获取）
-                    result.chunkText(),       // 被引用的片段文本
-                    result.score(),           // 相似度分数（0~1，越接近 1 越相关）
-                    result.startPosition(),   // 片段在原文中的起始位置（前端高亮用）
-                    result.endPosition()      // 片段在原文中的结束位置
-            ));
+            // ChunkReference 已经是引用来源对象，直接复用
+            references.add(result);
         }
 
         // Step 4: 组装 LLM prompt（模板通过构造函数注入，便于外部配置）
         String prompt = String.format(promptTemplate,
-                contextBuilder.toString(),  // 拼接好的检索上下文
-                query.text()                // 用户的原始问题
+                contextBuilder.toString(),
+                query.text()
         );
 
         // Step 5: 返回 RagContext，包含 prompt 和引用来源
-        // 适配器层拿到这个对象后，决定是同步生成回答还是流式推送
         return new RagContext(prompt, references);
     }
 }

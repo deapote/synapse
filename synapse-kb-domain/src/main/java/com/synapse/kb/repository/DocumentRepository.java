@@ -40,6 +40,16 @@ public interface DocumentRepository {
     List<Document> findByKnowledgeBaseId(KnowledgeBaseId knowledgeBaseId);
 
     /**
+     * 分页查询指定知识库下的文档。
+     *
+     * @param knowledgeBaseId 知识库唯一标识
+     * @param page            页码，从 0 开始
+     * @param size            每页大小
+     * @return 文档列表
+     */
+    List<Document> findByKnowledgeBaseId(KnowledgeBaseId knowledgeBaseId, int page, int size);
+
+    /**
      * 根据 ID 删除文档。
      *
      * @param id 文档唯一标识

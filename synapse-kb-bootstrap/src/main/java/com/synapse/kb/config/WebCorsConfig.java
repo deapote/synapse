@@ -15,10 +15,16 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
  * <p>配置说明：
  * <ul>
  *   <li>允许所有来源（{@code *}）—— 开发环境便利，生产环境建议收紧为具体域名</li>
+ *   <li>不允许携带凭证（cookies）—— 与 {@code *} 来源兼容，避免安全漏洞</li>
  *   <li>允许所有常见 HTTP 方法</li>
  *   <li>允许 {@code Content-Type} 和 {@code Authorization} 请求头</li>
- *   <li>允许携带凭证（cookies）</li>
  * </ul>
+ *
+ * <p>生产环境应收紧为具体域名并视需要启用凭证：
+ * <pre>
+ *   config.addAllowedOrigin("https://your-domain.com");
+ *   config.setAllowCredentials(true);
+ * </pre>
  */
 @Configuration
 public class WebCorsConfig {
@@ -29,7 +35,7 @@ public class WebCorsConfig {
         config.addAllowedOriginPattern("*");
         config.addAllowedMethod("*");
         config.addAllowedHeader("*");
-        config.setAllowCredentials(true);
+        config.setAllowCredentials(false);
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

@@ -2,10 +2,10 @@ package com.synapse.kb.adapter.out.vector;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.synapse.kb.model.ChunkReference;
 import com.synapse.kb.model.DocumentChunk;
 import com.synapse.kb.model.DocumentId;
 import com.synapse.kb.model.KnowledgeBaseId;
-import com.synapse.kb.port.out.ChunkSearchResult;
 import com.synapse.kb.port.out.VectorStorePort;
 import com.synapse.shared.exception.DomainException;
 import io.milvus.v2.client.ConnectConfig;
@@ -178,7 +178,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     }
 
     @Override
-    public List<ChunkSearchResult> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK) {
+    public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK) {
         ensureInitialized();
         try {
             SearchReq req = SearchReq.builder()
@@ -190,7 +190,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                     .build();
 
             SearchResp resp = client.search(req);
-            List<ChunkSearchResult> results = new ArrayList<>();
+            List<ChunkReference> results = new ArrayList<>();
 
             List<List<SearchResp.SearchResult>> batchResults = resp.getSearchResults();
             if (batchResults == null || batchResults.isEmpty()) {
@@ -201,7 +201,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 Map<String, Object> entity = result.getEntity();
                 float score = normalizeScore(result.getScore());
 
-                results.add(new ChunkSearchResult(
+                results.add(new ChunkReference(
                         (String) entity.get("documentId"),
                         (String) entity.get("documentName"),
                         (String) entity.get("chunkText"),

@@ -17,4 +17,13 @@ public interface ListKnowledgeBaseUseCase {
      * @return 知识库列表，无数据时返回空列表
      */
     List<KnowledgeBase> listAll();
+
+    /**
+     * 分页查询所有知识库。
+     *
+     * @param page 页码，从 0 开始
+     * @param size 每页大小
+     * @return 知识库列表
+     */
+    List<KnowledgeBase> listAll(int page, int size);
 }

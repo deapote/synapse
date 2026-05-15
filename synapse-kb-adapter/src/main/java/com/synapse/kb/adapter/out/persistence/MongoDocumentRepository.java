@@ -6,6 +6,8 @@ import com.synapse.kb.model.DocumentId;
 import com.synapse.kb.model.DocumentStatus;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.repository.DocumentRepository;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -15,7 +17,7 @@ import java.util.Optional;
  * 文档仓储实现（MongoDB 适配器）。
  *
  * <p>实现领域层定义的 {@link DocumentRepository} 接口，将领域对象与 MongoDB 文档实体互相转换。
- * 内部使用 Spring Data Reactive MongoDB 驱动，通过 {@link #block()} 将 Reactive API 包装为同步 API。
+ * 使用 Spring Data MongoDB 同步驱动。
  */
 @Component
 public class MongoDocumentRepository implements DocumentRepository {
@@ -29,37 +31,45 @@ public class MongoDocumentRepository implements DocumentRepository {
     @Override
     public Document save(Document document) {
         DocumentDocument doc = toDocument(document);
-        DocumentDocument saved = documentMongoRepository.save(doc).block();
+        DocumentDocument saved = documentMongoRepository.save(doc);
         return toEntity(saved);
     }
 
     @Override
     public Optional<Document> findById(DocumentId id) {
         return documentMongoRepository.findById(id.value())
-                .blockOptional()
                 .map(this::toEntity);
     }
 
     @Override
     public List<Document> findByKnowledgeBaseId(KnowledgeBaseId knowledgeBaseId) {
         return documentMongoRepository.findByKnowledgeBaseId(knowledgeBaseId.value())
-                .toStream()
+                .stream()
                 .map(this::toEntity)
                 .toList();
     }
 
     @Override
     public void deleteById(DocumentId id) {
-        documentMongoRepository.deleteById(id.value()).block();
+        documentMongoRepository.deleteById(id.value());
     }
 
     @Override
     public boolean existsByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) {
-        return Boolean.TRUE.equals(
-                documentMongoRepository.existsByKnowledgeBaseIdAndContentHash(
-                        knowledgeBaseId.value(), contentHash
-                ).block()
+        return documentMongoRepository.existsByKnowledgeBaseIdAndContentHash(
+                knowledgeBaseId.value(), contentHash
         );
+    }
+
+    @Override
+    public List<Document> findByKnowledgeBaseId(KnowledgeBaseId knowledgeBaseId, int page, int size) {
+        return documentMongoRepository.findByKnowledgeBaseId(
+                        knowledgeBaseId.value(),
+                        PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "uploadedAt"))
+                )
+                .stream()
+                .map(this::toEntity)
+                .toList();
     }
 
     @Override
@@ -67,7 +77,7 @@ public class MongoDocumentRepository implements DocumentRepository {
         return documentMongoRepository.findByKnowledgeBaseIdAndContentHash(
                         knowledgeBaseId.value(), contentHash
                 )
-                .toStream()
+                .stream()
                 .map(this::toEntity)
                 .toList();
     }

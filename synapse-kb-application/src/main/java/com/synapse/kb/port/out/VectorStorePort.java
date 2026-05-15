@@ -1,5 +1,6 @@
 package com.synapse.kb.port.out;
 
+import com.synapse.kb.model.ChunkReference;
 import com.synapse.kb.model.DocumentChunk;
 import com.synapse.kb.model.DocumentId;
 import com.synapse.kb.model.KnowledgeBaseId;
@@ -34,7 +35,7 @@ public interface VectorStorePort {
      * @param topK            返回最相似的 K 个结果
      * @return 检索结果列表，按相似度降序排列
      */
-    List<ChunkSearchResult> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK);
+    List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK);
 
     /**
      * 删除指定文档的所有向量。

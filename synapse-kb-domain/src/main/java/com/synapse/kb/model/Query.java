@@ -12,7 +12,7 @@ import com.synapse.shared.exception.DomainException;
  * @param text            用户原始查询文本
  */
 public record Query(
-        String knowledgeBaseId,
+        KnowledgeBaseId knowledgeBaseId,
         String text
 ) {
 
@@ -20,7 +20,7 @@ public record Query(
      * 紧凑构造方法：在编译器自动完成字段赋值前执行校验。
      */
     public Query {
-        if (knowledgeBaseId == null || knowledgeBaseId.isBlank()) {
+        if (knowledgeBaseId == null) {
             throw new DomainException("知识库编号不能为空");
         }
         if (text == null || text.isBlank()) {

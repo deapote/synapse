@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.synapse.kb.adapter.in.web.dto.ChunkReferenceResponse;
 import com.synapse.kb.adapter.in.web.dto.QueryRequest;
 import com.synapse.kb.model.ChunkReference;
+import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.model.Query;
 import com.synapse.kb.model.RagContext;
 import com.synapse.kb.port.in.QueryKnowledgeBaseUseCase;
@@ -74,7 +75,7 @@ public class StreamingQueryController {
             @PathVariable String kbId,
             @RequestBody QueryRequest request
     ) {
-        return Mono.fromCallable(() -> queryUseCase.prepare(new Query(kbId, request.query())))
+        return Mono.fromCallable(() -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query())))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(this::buildSseFlux)
                 .onErrorResume(e -> {
