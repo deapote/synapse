@@ -8,12 +8,7 @@ target/
 !**/src/test/**/target/
 
 # IntelliJ IDEA
-.idea/workspace.xml
-.idea/tasks.xml
-.idea/usage.statistics.xml
-.idea/dictionaries
-.idea/shelf
-.idea/sonarlint/
+.idea/
 *.iml
 *.ipr
 *.iws
@@ -49,3 +44,9 @@ CLAUDE.md
 *.tmp
 *.swp
 *~
+
+# Study notes
+study-notes/
+
+# Docs superpowers
+docs/superpowers/
