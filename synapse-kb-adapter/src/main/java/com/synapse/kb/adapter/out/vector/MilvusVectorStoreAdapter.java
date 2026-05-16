@@ -223,7 +223,8 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         try {
             client.delete(DeleteReq.builder()
                     .collectionName(collectionName)
-                    .filter("documentId == '" + escapeFilterValue(documentId.value()) + "'")
+                    .filter("knowledgeBaseId == '" + escapeFilterValue(knowledgeBaseId.value())
+                            + "' && documentId == '" + escapeFilterValue(documentId.value()) + "'")
                     .build());
         } catch (Exception e) {
             throw new DomainException("向量删除失败", e);

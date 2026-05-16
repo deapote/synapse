@@ -6,8 +6,8 @@ import org.springframework.boot.autoconfigure.data.mongo.MongoReactiveRepositori
 import org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfiguration;
 import org.springframework.data.mongodb.repository.config.EnableMongoRepositories;
 
-@EnableMongoRepositories
-@SpringBootApplication(exclude = {
+@EnableMongoRepositories(basePackages = "com.synapse")
+@SpringBootApplication(scanBasePackages = "com.synapse", exclude = {
         MongoReactiveAutoConfiguration.class,
         MongoReactiveRepositoriesAutoConfiguration.class
 })

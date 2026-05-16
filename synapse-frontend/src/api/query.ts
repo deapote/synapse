@@ -1,4 +1,5 @@
 import type { ChunkReference } from '@/types'
+import { getStoredToken } from '@/api/token'
 
 export interface StreamCallbacks {
   onToken: (token: string) => void
@@ -22,12 +23,17 @@ export function streamQueryKnowledgeBase(
 ): AbortController {
   const ctrl = new AbortController()
   const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
+  const token = getStoredToken()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  }
+  if (token) {
+    headers[token.tokenName] = token.tokenValue
+  }
 
   fetch(`${baseUrl}/knowledge-bases/${knowledgeBaseId}/query/stream`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({ query }),
     signal: ctrl.signal,
   })
@@ -43,6 +49,7 @@ export function streamQueryKnowledgeBase(
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let terminalEventReceived = false
 
       while (true) {
         const { done, value } = await reader.read()
@@ -81,14 +88,18 @@ export function streamQueryKnowledgeBase(
           } else if (event === 'references') {
             callbacks.onReferences(payload.references)
           } else if (event === 'complete') {
+            terminalEventReceived = true
             callbacks.onComplete()
           } else if (event === 'error') {
+            terminalEventReceived = true
             callbacks.onError(payload.message)
           }
         }
       }
 
-      callbacks.onComplete()
+      if (!terminalEventReceived) {
+        callbacks.onComplete()
+      }
     })
     .catch((err) => {
       if (err.name === 'AbortError') {

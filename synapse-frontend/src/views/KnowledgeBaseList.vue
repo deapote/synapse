@@ -101,6 +101,7 @@ function formatDate(dateStr: string): string {
             <p v-if="kb.description" class="kb-desc">{{ kb.description }}</p>
             <div class="kb-meta">
               <span class="kb-id">ID: {{ kb.id }}</span>
+              <span class="kb-owner">Owner: {{ kb.ownerUserId }}</span>
             </div>
           </div>
           <div class="kb-actions" @click.stop>
@@ -279,9 +280,17 @@ function formatDate(dateStr: string): string {
 }
 
 .kb-meta {
+  display: flex;
+  gap: 12px;
   font-size: 12px;
   color: var(--text-muted);
   font-family: var(--font-mono);
+}
+
+.kb-owner {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kb-actions {

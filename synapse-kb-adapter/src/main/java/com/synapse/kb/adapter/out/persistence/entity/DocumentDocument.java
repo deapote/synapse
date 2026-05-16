@@ -1,15 +1,19 @@
 package com.synapse.kb.adapter.out.persistence.entity;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
 @Document(collection = "documents")
+@CompoundIndex(name = "uk_kb_content_hash", def = "{'knowledgeBaseId': 1, 'contentHash': 1}", unique = true)
 public class DocumentDocument {
     @Id
     private String id;
 
+    @Indexed
     private String knowledgeBaseId;
 
     private String fileName;
@@ -18,6 +22,7 @@ public class DocumentDocument {
 
     private long fileSize;
 
+    @Indexed
     private Instant uploadedAt;
 
     private String status;
@@ -26,6 +31,7 @@ public class DocumentDocument {
 
     private int chunkCount;
 
+    @Indexed
     private String contentHash;
 
     private Instant processingStartAt;

@@ -9,7 +9,59 @@ export interface KnowledgeBase {
   id: string
   name: string
   description: string
+  ownerUserId: string
   createdAt: string
+}
+
+// ========== 认证 / 权限 ==========
+
+export type RoleName = 'ADMIN' | 'USER'
+export type AuthPermission = 'KB_READ' | 'KB_WRITE' | 'KB_DELETE' | 'AUTH_ADMIN'
+
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
+export interface LoginResponse {
+  id: string
+  username: string
+  displayName: string
+  roles: RoleName[]
+  permissions: AuthPermission[]
+  tokenName: string
+  tokenValue: string
+}
+
+export interface CurrentUser {
+  id: string
+  username: string
+  displayName: string
+  roles: RoleName[]
+  permissions: AuthPermission[]
+  enabled: boolean
+  createdAt: string | null
+}
+
+export interface CreateUserRequest {
+  username: string
+  displayName?: string
+  password: string
+  roles: RoleName[]
+}
+
+export interface UserAdminView {
+  id: string
+  username: string
+  displayName: string
+  roles: RoleName[]
+  enabled: boolean
+  createdAt: string
+}
+
+export interface RoleView {
+  name: RoleName
+  permissions: AuthPermission[]
 }
 
 // ========== 文档 ==========

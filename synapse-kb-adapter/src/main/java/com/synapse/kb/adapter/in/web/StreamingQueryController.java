@@ -17,7 +17,6 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
@@ -75,8 +74,8 @@ public class StreamingQueryController {
             @PathVariable String kbId,
             @RequestBody QueryRequest request
     ) {
-        return Mono.fromCallable(() -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query())))
-                .subscribeOn(Schedulers.boundedElastic())
+        return SaTokenReactorBridge.blockingCall(
+                        () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query())))
                 .flatMapMany(this::buildSseFlux)
                 .onErrorResume(e -> {
                     log.error("流式问答失败", e);

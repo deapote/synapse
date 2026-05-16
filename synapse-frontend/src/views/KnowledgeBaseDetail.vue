@@ -135,6 +135,7 @@ function formatDate(dateStr: string | null): string {
       <p v-if="kb.description" class="kb-desc">{{ kb.description }}</p>
       <div class="kb-meta">
         <span>ID: {{ kb.id }}</span>
+        <span>Owner: {{ kb.ownerUserId }}</span>
         <span>创建于 {{ new Date(kb.createdAt).toLocaleDateString('zh-CN') }}</span>
       </div>
     </div>
@@ -165,7 +166,7 @@ function formatDate(dateStr: string | null): string {
         ref="fileInput"
         type="file"
         style="display: none"
-        accept=".pdf,.doc,.docx,.txt"
+        accept=".pdf,.doc,.docx,.txt,.md"
         @change="handleFileChange"
       />
 

@@ -17,12 +17,14 @@ public class KnowledgeBase {
     private final KnowledgeBaseId id;
     private final String name;
     private final String description;
+    private final String ownerUserId;
     private final Instant createdAt;
 
-    private KnowledgeBase(KnowledgeBaseId id, String name, String description, Instant createdAt) {
+    private KnowledgeBase(KnowledgeBaseId id, String name, String description, String ownerUserId, Instant createdAt) {
         this.id = id;
         this.name = name;
         this.description = description;
+        this.ownerUserId = ownerUserId;
         this.createdAt = createdAt;
     }
 
@@ -34,14 +36,17 @@ public class KnowledgeBase {
      * @return 新的知识库实例
      * @throws DomainException 名称非法时抛出
      */
-    public static KnowledgeBase create(String name, String description) {
+    public static KnowledgeBase create(String name, String description, String ownerUserId) {
         if (name == null || name.isBlank()) {
             throw new DomainException("知识库名称不能为空");
         }
         if (name.length() > 200) {
             throw new DomainException("知识库名称不能超过200个字符");
         }
-        return new KnowledgeBase(KnowledgeBaseId.generate(), name, description, Instant.now());
+        if (ownerUserId == null || ownerUserId.isBlank()) {
+            throw new DomainException("知识库归属用户不能为空");
+        }
+        return new KnowledgeBase(KnowledgeBaseId.generate(), name, description, ownerUserId, Instant.now());
     }
 
     /**
@@ -56,8 +61,8 @@ public class KnowledgeBase {
      * @param createdAt   创建时间
      * @return 重建后的知识库实例
      */
-    public static KnowledgeBase reconstruct(KnowledgeBaseId id, String name, String description, Instant createdAt) {
-        return new KnowledgeBase(id, name, description, createdAt);
+    public static KnowledgeBase reconstruct(KnowledgeBaseId id, String name, String description, String ownerUserId, Instant createdAt) {
+        return new KnowledgeBase(id, name, description, ownerUserId, createdAt);
     }
 
     public KnowledgeBaseId getId() {
@@ -70,6 +75,10 @@ public class KnowledgeBase {
 
     public String getDescription() {
         return description;
+    }
+
+    public String getOwnerUserId() {
+        return ownerUserId;
     }
 
     public Instant getCreatedAt() {

@@ -11,6 +11,7 @@ import com.synapse.shared.exception.DomainException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 /**
  * 知识库应用服务。
@@ -64,6 +65,8 @@ public class KnowledgeBaseApplicationService implements
      * 向量存储端口：存取向量数据（Milvus 适配器实现）
      */
     private final VectorStorePort vectorStorePort;
+    private final AccessControlPort accessControlPort;
+    private final Executor ingestionExecutor;
 
     /**
      * LLM prompt 模板，需包含两个 {@code %s} 占位符（上下文、问题）
@@ -94,6 +97,8 @@ public class KnowledgeBaseApplicationService implements
             RecursiveChunkingStrategy recursiveChunkingStrategy,
             EmbeddingPort embeddingPort,
             VectorStorePort vectorStorePort,
+            AccessControlPort accessControlPort,
+            Executor ingestionExecutor,
             String promptTemplate,
             int topK
     ) {
@@ -103,8 +108,10 @@ public class KnowledgeBaseApplicationService implements
         this.recursiveChunkingStrategy = recursiveChunkingStrategy;
         this.embeddingPort = embeddingPort;
         this.vectorStorePort = vectorStorePort;
+        this.accessControlPort = accessControlPort;
+        this.ingestionExecutor = ingestionExecutor;
         this.promptTemplate = promptTemplate;
-        this.topK = topK;
+        this.topK = Math.max(1, Math.min(topK, 20));
     }
 
     // ========================== 知识库管理 ==========================
@@ -119,8 +126,9 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public KnowledgeBaseId create(CreateKnowledgeBaseCommand command) {
+        accessControlPort.checkPermission("KB_WRITE");
         // KnowledgeBase.create 是静态工厂方法，封装了名称校验等业务规则
-        KnowledgeBase kb = KnowledgeBase.create(command.name(), command.description());
+        KnowledgeBase kb = KnowledgeBase.create(command.name(), command.description(), accessControlPort.currentUserId());
         // 保存到仓储（MongoDB 适配器负责实际的持久化）
         return knowledgeBaseRepository.save(kb).getId();
     }
@@ -134,12 +142,14 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public List<KnowledgeBase> listAll() {
-        return knowledgeBaseRepository.findAll();
+        accessControlPort.checkPermission("KB_READ");
+        return filterVisible(knowledgeBaseRepository.findAll());
     }
 
     @Override
     public List<KnowledgeBase> listAll(int page, int size) {
-        return knowledgeBaseRepository.findAll(page, size);
+        accessControlPort.checkPermission("KB_READ");
+        return filterVisible(knowledgeBaseRepository.findAll(page, size));
     }
 
     /**
@@ -156,6 +166,8 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public void delete(KnowledgeBaseId id) {
+        KnowledgeBase kb = requireKnowledgeBase(id);
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_DELETE");
         // 查出该知识库下的所有文档
         List<Document> documents = documentRepository.findByKnowledgeBaseId(id);
         // 级联清理：先删向量（Milvus），再删文档元数据（MongoDB）
@@ -182,6 +194,8 @@ public class KnowledgeBaseApplicationService implements
         // 先查出文档，获取其 knowledgeBaseId（向量库隔离需要）
         Document document = documentRepository.findById(id)
                 .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_DELETE");
         // 删除该文档在向量库中的所有向量片段
         vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), id);
         // 删除文档元数据
@@ -196,11 +210,15 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public List<Document> listByKnowledgeBase(KnowledgeBaseId knowledgeBaseId) {
+        KnowledgeBase kb = requireKnowledgeBase(knowledgeBaseId);
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_READ");
         return documentRepository.findByKnowledgeBaseId(knowledgeBaseId);
     }
 
     @Override
     public List<Document> listByKnowledgeBase(KnowledgeBaseId knowledgeBaseId, int page, int size) {
+        KnowledgeBase kb = requireKnowledgeBase(knowledgeBaseId);
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_READ");
         return documentRepository.findByKnowledgeBaseId(knowledgeBaseId, page, size);
     }
 
@@ -221,6 +239,8 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public DocumentId ingest(IngestDocumentCommand command) {
+        KnowledgeBase kb = requireKnowledgeBase(command.knowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
         // Step 1: 去重与失败清理。
         // 同一知识库中，查询相同哈希的所有文档记录
         List<Document> existingDocs = documentRepository.findByKnowledgeBaseIdAndContentHash(
@@ -228,7 +248,9 @@ public class KnowledgeBaseApplicationService implements
         );
         for (Document existing : existingDocs) {
             // 已完成或正在处理的文档：不允许重复上传
-            if (existing.getStatus() == DocumentStatus.COMPLETED || existing.getStatus() == DocumentStatus.PROCESSING) {
+            if (existing.getStatus() == DocumentStatus.PENDING
+                    || existing.getStatus() == DocumentStatus.PROCESSING
+                    || existing.getStatus() == DocumentStatus.COMPLETED) {
                 throw new DomainException("此知识库已存在相同内容的文档");
             }
             // 失败文档：清理残留数据（向量 + 元数据），允许重新上传
@@ -244,15 +266,14 @@ public class KnowledgeBaseApplicationService implements
                 command.fileName(),          // 原始文件名
                 command.contentType(),       // MIME 类型（对应 Document 的 fileType）
                 command.fileSize(),          // 文件大小（字节）
-                command.contentHash()        // 内容哈希（MD5/SHA256），用于去重
+                command.contentHash()        // 内容哈希（SHA-256），用于去重
         );
 
         // Step 3: 保存文档元数据（MongoDB）
         document = documentRepository.save(document);
 
-        // Step 4: 处理文档内容（解析 → 分块 → 向量化 → 存储）
-        // 注意：InputStream 只能读一次，所以处理逻辑紧跟在创建之后
-        processDocument(document, command.content());
+        Document processingDocument = document;
+        ingestionExecutor.execute(() -> processDocument(processingDocument, command.content()));
 
         return document.getId();
     }
@@ -311,6 +332,11 @@ public class KnowledgeBaseApplicationService implements
             document.transitionTo(DocumentStatus.COMPLETED);
 
         } catch (Exception e) {
+            try {
+                vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
+            } catch (Exception ignored) {
+                // 保留原始处理异常；残留向量可由后续失败重试清理。
+            }
             // 状态流转：PROCESSING → FAILED，同时记录失败原因
             document.transitionTo(DocumentStatus.FAILED, e.getMessage());
             // 把异常继续抛出去，让上层（如 Controller）捕获并返回错误响应
@@ -345,6 +371,8 @@ public class KnowledgeBaseApplicationService implements
      */
     @Override
     public RagContext prepare(Query query) {
+        KnowledgeBase kb = requireKnowledgeBase(query.knowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_READ");
         // Step 1: 把用户的问题文本转成向量（1536 维浮点数组）
         float[] queryEmbedding = embeddingPort.embed(query.text());
 
@@ -363,9 +391,8 @@ public class KnowledgeBaseApplicationService implements
         for (int i = 0; i < results.size(); i++) {
             ChunkReference result = results.get(i);
 
-            // 把每条结果格式化为 "[1] 片段文本\n\n" 的形式
-            contextBuilder.append("[").append(i + 1).append("] ")
-                    .append(result.chunkText()).append("\n\n");
+            contextBuilder.append("<reference index=\"").append(i + 1).append("\">\n")
+                    .append(result.chunkText()).append("\n</reference>\n\n");
 
             // ChunkReference 已经是引用来源对象，直接复用
             references.add(result);
@@ -379,5 +406,20 @@ public class KnowledgeBaseApplicationService implements
 
         // Step 5: 返回 RagContext，包含 prompt 和引用来源
         return new RagContext(prompt, references);
+    }
+
+    private KnowledgeBase requireKnowledgeBase(KnowledgeBaseId id) {
+        return knowledgeBaseRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到知识库: " + id.value()));
+    }
+
+    private List<KnowledgeBase> filterVisible(List<KnowledgeBase> knowledgeBases) {
+        if (accessControlPort.isAdmin()) {
+            return knowledgeBases;
+        }
+        String currentUserId = accessControlPort.currentUserId();
+        return knowledgeBases.stream()
+                .filter(kb -> currentUserId.equals(kb.getOwnerUserId()))
+                .toList();
     }
 }

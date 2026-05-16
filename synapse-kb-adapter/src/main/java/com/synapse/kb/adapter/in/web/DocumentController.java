@@ -7,12 +7,13 @@ import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.in.DeleteDocumentUseCase;
 import com.synapse.kb.port.in.IngestDocumentUseCase;
 import com.synapse.kb.port.in.ListDocumentUseCase;
+import com.synapse.shared.exception.DomainException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
@@ -35,21 +36,32 @@ public class DocumentController {
     private final IngestDocumentUseCase ingestUseCase;
     private final ListDocumentUseCase listUseCase;
     private final DeleteDocumentUseCase deleteUseCase;
+    private final long maxFileBytes;
+    private final List<String> allowedExtensions;
+    private final List<String> allowedContentTypes;
+    private final int maxPageSize;
 
     public DocumentController(IngestDocumentUseCase ingestUseCase,
                               ListDocumentUseCase listUseCase,
-                              DeleteDocumentUseCase deleteUseCase) {
+                              DeleteDocumentUseCase deleteUseCase,
+                              @Value("${synapse.upload.max-file-bytes:20971520}") long maxFileBytes,
+                              @Value("${synapse.upload.allowed-extensions:pdf,doc,docx,txt,md}") List<String> allowedExtensions,
+                              @Value("${synapse.upload.allowed-content-types:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,application/octet-stream}") List<String> allowedContentTypes,
+                              @Value("${synapse.web.max-page-size:100}") int maxPageSize) {
         this.ingestUseCase = ingestUseCase;
         this.listUseCase = listUseCase;
         this.deleteUseCase = deleteUseCase;
+        this.maxFileBytes = maxFileBytes;
+        this.allowedExtensions = allowedExtensions;
+        this.allowedContentTypes = allowedContentTypes;
+        this.maxPageSize = maxPageSize;
     }
 
     /**
      * 上传文档到指定知识库。
      *
-     * <p>流程：接收文件 → 读取字节 → 计算 MD5 哈希 → 调用摄入用例 → 返回文档信息。
-     * 文件读取使用 WebFlux 响应式流，处理逻辑通过 {@code subscribeOn(Schedulers.boundedElastic())}
-     * 调度到弹性线程池，避免阻塞 Netty 事件循环。
+     * <p>流程：接收文件 → 读取字节 → 校验大小和类型 → 计算 SHA-256 哈希 → 调用摄入用例 → 返回文档信息。
+     * 文件读取使用 WebFlux 响应式流，处理逻辑调度到弹性线程池，避免阻塞 Netty 事件循环。
      *
      * @param kbId     目标知识库 ID
      * @param filePart 上传的文件（multipart/form-data）
@@ -60,18 +72,22 @@ public class DocumentController {
             @PathVariable String kbId,
             @RequestPart("file") FilePart filePart
     ) {
-        return DataBufferUtils.join(filePart.content())
+        return DataBufferUtils.join(filePart.content(), Math.toIntExact(maxFileBytes))
                 .map(dataBuffer -> {
                     byte[] bytes = new byte[dataBuffer.readableByteCount()];
                     dataBuffer.read(bytes);
                     DataBufferUtils.release(dataBuffer);
                     return bytes;
                 })
-                .flatMap(bytes -> Mono.fromCallable(() -> {
-                    String contentHash = bytesToHex(MessageDigest.getInstance("MD5").digest(bytes));
+                .flatMap(bytes -> SaTokenReactorBridge.blockingCall(() -> {
+                    if (bytes.length <= 0 || bytes.length > maxFileBytes) {
+                        throw new DomainException("文件大小超过限制");
+                    }
                     String contentType = filePart.headers().getContentType() != null
                             ? filePart.headers().getContentType().toString()
                             : "application/octet-stream";
+                    validateFile(filePart.filename(), contentType);
+                    String contentHash = bytesToHex(MessageDigest.getInstance("SHA-256").digest(bytes));
                     InputStream content = new ByteArrayInputStream(bytes);
 
                     IngestDocumentUseCase.IngestDocumentCommand command =
@@ -96,7 +112,7 @@ public class DocumentController {
                             0,
                             null
                     );
-                }).subscribeOn(Schedulers.boundedElastic()));
+                }));
     }
 
     /**
@@ -113,7 +129,8 @@ public class DocumentController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size
     ) {
-        return Mono.fromCallable(() -> {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            validatePage(page, size);
             List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId), page, size);
             return docs.stream()
                     .map(doc -> new DocumentResponse(
@@ -127,7 +144,7 @@ public class DocumentController {
                             doc.getUploadedAt()
                     ))
                     .toList();
-        }).subscribeOn(Schedulers.boundedElastic());
+        });
     }
 
     /**
@@ -138,10 +155,7 @@ public class DocumentController {
      */
     @DeleteMapping("/api/documents/{id}")
     public Mono<Void> delete(@PathVariable String id) {
-        return Mono.<Void>fromCallable(() -> {
-            deleteUseCase.delete(new DocumentId(id));
-            return null;
-        }).subscribeOn(Schedulers.boundedElastic());
+        return SaTokenReactorBridge.blockingAction(() -> deleteUseCase.delete(new DocumentId(id)));
     }
 
     /**
@@ -156,5 +170,28 @@ public class DocumentController {
             sb.append(String.format("%02x", b));
         }
         return sb.toString();
+    }
+
+    private void validatePage(int page, int size) {
+        if (page < 0 || size < 1 || size > maxPageSize) {
+            throw new DomainException("分页参数非法");
+        }
+    }
+
+    private void validateFile(String filename, String contentType) {
+        String lowerName = filename == null ? "" : filename.toLowerCase();
+        boolean extensionAllowed = allowedExtensions.stream()
+                .map(String::trim)
+                .map(ext -> ext.startsWith(".") ? ext.toLowerCase() : "." + ext.toLowerCase())
+                .anyMatch(lowerName::endsWith);
+        if (!extensionAllowed) {
+            throw new DomainException("不支持的文件类型");
+        }
+        boolean contentTypeAllowed = allowedContentTypes.stream()
+                .map(String::trim)
+                .anyMatch(allowed -> allowed.equalsIgnoreCase(contentType));
+        if (!contentTypeAllowed) {
+            throw new DomainException("不支持的文件内容类型");
+        }
     }
 }

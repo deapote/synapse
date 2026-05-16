@@ -40,6 +40,9 @@ application-dev.yml
 .claude/
 CLAUDE.md
 
+# Codex
+AGENTS.md
+
 # Temp files
 *.tmp
 *.swp

@@ -7,9 +7,11 @@ import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.in.CreateKnowledgeBaseUseCase;
 import com.synapse.kb.port.in.DeleteKnowledgeBaseUseCase;
 import com.synapse.kb.port.in.ListKnowledgeBaseUseCase;
+import com.synapse.kb.port.out.AccessControlPort;
+import com.synapse.shared.exception.DomainException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 import java.time.Instant;
 import java.util.List;
@@ -18,7 +20,7 @@ import java.util.List;
  * 知识库管理 Web 控制器（入站适配器）。
  *
  * <p>处理知识库的增删查改 HTTP 请求，调用 application 层 UseCase 完成业务逻辑。
- * 所有端点返回 {@code Mono<>}，内部通过 {@link Schedulers#boundedElastic()} 将同步调用异步化，
+ * 所有端点返回 {@code Mono<>}，内部将同步调用异步化，
  * 避免阻塞 Netty 事件循环线程。
  *
  * <p>基础路径：{@code /api/knowledge-bases}
@@ -30,13 +32,19 @@ public class KnowledgeBaseController {
     private final CreateKnowledgeBaseUseCase createUseCase;
     private final DeleteKnowledgeBaseUseCase deleteUseCase;
     private final ListKnowledgeBaseUseCase listUseCase;
+    private final AccessControlPort accessControlPort;
+    private final int maxPageSize;
 
     public KnowledgeBaseController(CreateKnowledgeBaseUseCase createUseCase,
                                    DeleteKnowledgeBaseUseCase deleteUseCase,
-                                   ListKnowledgeBaseUseCase listUseCase) {
+                                   ListKnowledgeBaseUseCase listUseCase,
+                                   AccessControlPort accessControlPort,
+                                   @Value("${synapse.web.max-page-size:100}") int maxPageSize) {
         this.createUseCase = createUseCase;
         this.deleteUseCase = deleteUseCase;
         this.listUseCase = listUseCase;
+        this.accessControlPort = accessControlPort;
+        this.maxPageSize = maxPageSize;
     }
 
     /**
@@ -47,16 +55,16 @@ public class KnowledgeBaseController {
      */
     @PostMapping
     public Mono<KnowledgeBaseResponse> create(@RequestBody CreateKnowledgeBaseRequest request) {
-        return Mono.fromCallable(() -> {
+        return SaTokenReactorBridge.blockingCall(() -> {
             KnowledgeBaseId id = createUseCase.create(
                     new CreateKnowledgeBaseUseCase.CreateKnowledgeBaseCommand(
-                            request.name(), request.description()
+                            request.name(), request.description(), accessControlPort.currentUserId()
                     )
             );
             return new KnowledgeBaseResponse(
-                    id.value(), request.name(), request.description(), Instant.now()
+                    id.value(), request.name(), request.description(), accessControlPort.currentUserId(), Instant.now()
             );
-        }).subscribeOn(Schedulers.boundedElastic());
+        });
     }
 
     /**
@@ -71,16 +79,20 @@ public class KnowledgeBaseController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size
     ) {
-        return Mono.fromCallable(() ->
-                listUseCase.listAll(page, size).stream()
-                        .map(kb -> new KnowledgeBaseResponse(
-                                kb.getId().value(),
-                                kb.getName(),
-                                kb.getDescription(),
-                                kb.getCreatedAt()
-                        ))
-                        .toList()
-        ).subscribeOn(Schedulers.boundedElastic());
+        return SaTokenReactorBridge.blockingCall(() ->
+                {
+                    validatePage(page, size);
+                    return listUseCase.listAll(page, size).stream()
+                            .map(kb -> new KnowledgeBaseResponse(
+                                    kb.getId().value(),
+                                    kb.getName(),
+                                    kb.getDescription(),
+                                    kb.getOwnerUserId(),
+                                    kb.getCreatedAt()
+                            ))
+                            .toList();
+                }
+        );
     }
 
     /**
@@ -91,9 +103,12 @@ public class KnowledgeBaseController {
      */
     @DeleteMapping("/{id}")
     public Mono<Void> delete(@PathVariable String id) {
-        return Mono.<Void>fromCallable(() -> {
-            deleteUseCase.delete(new KnowledgeBaseId(id));
-            return null;
-        }).subscribeOn(Schedulers.boundedElastic());
+        return SaTokenReactorBridge.blockingAction(() -> deleteUseCase.delete(new KnowledgeBaseId(id)));
+    }
+
+    private void validatePage(int page, int size) {
+        if (page < 0 || size < 1 || size > maxPageSize) {
+            throw new DomainException("分页参数非法");
+        }
     }
 }

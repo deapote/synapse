@@ -2,12 +2,15 @@
 import { useRoute, useRouter } from 'vue-router'
 import {
   Database,
+  LogOut,
   MessageSquare,
-  Settings
+  Shield
 } from 'lucide-vue-next'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 
 interface NavItem {
   label: string
@@ -35,6 +38,11 @@ function isActive(path: string): boolean {
 function navigate(path: string) {
   router.push(path)
 }
+
+async function handleLogout() {
+  await authStore.logout()
+  router.replace('/login')
+}
 </script>
 
 <template>
@@ -57,9 +65,22 @@ function navigate(path: string) {
     </nav>
 
     <div class="footer">
-      <button class="nav-item" @click="router.push('/settings')">
-        <Settings class="nav-icon" :size="18" />
-        <span>设置</span>
+      <button
+        v-if="authStore.isAdmin"
+        class="nav-item"
+        :class="{ active: isActive('/admin') }"
+        @click="router.push('/admin')"
+      >
+        <Shield class="nav-icon" :size="18" />
+        <span>权限管理</span>
+      </button>
+      <div class="user-box">
+        <div class="user-name">{{ authStore.user?.displayName || authStore.user?.username }}</div>
+        <div class="user-role">{{ authStore.user?.roles.join(' / ') }}</div>
+      </div>
+      <button class="nav-item logout" @click="handleLogout">
+        <LogOut class="nav-icon" :size="18" />
+        <span>退出登录</span>
       </button>
     </div>
   </aside>
@@ -138,5 +159,35 @@ function navigate(path: string) {
   margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-box {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-role {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.logout:hover {
+  color: var(--danger);
+  background: var(--danger-subtle);
 }
 </style>

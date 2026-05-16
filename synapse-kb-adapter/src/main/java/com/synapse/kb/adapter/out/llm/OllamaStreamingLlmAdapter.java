@@ -85,7 +85,7 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                         if (cancelled.get()) {
                             return;
                         }
-                        queue.offer(partialResponse);
+	                        enqueue(queue, partialResponse, errorRef);
                     }
 
                     @Override
@@ -95,23 +95,23 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                             context.streamingHandle().cancel();
                             return;
                         }
-                        queue.offer(partialResponse.text());
+	                        enqueue(queue, partialResponse.text(), errorRef);
                     }
 
                     @Override
                     public void onCompleteResponse(ChatResponse response) {
-                        queue.offer(POISON);
+	                        enqueue(queue, POISON, errorRef);
                     }
 
                     @Override
                     public void onError(Throwable error) {
-                        errorRef.set(error);
-                        queue.offer(POISON);
+	                        errorRef.set(error);
+	                        enqueue(queue, POISON, errorRef);
                     }
                         });
                     } catch (Exception e) {
-                        errorRef.set(e);
-                        queue.offer(POISON);
+	                        errorRef.set(e);
+	                        enqueue(queue, POISON, errorRef);
                     }
                 });
 
@@ -129,11 +129,14 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                 }
                 try {
                     next = queue.take();
-                    if (next == POISON) {
-                        next = null;
-                        pendingError = errorRef.get();
-                        return false;
-                    }
+	                    if (next == POISON) {
+	                        next = null;
+	                        pendingError = errorRef.get();
+	                        if (pendingError != null) {
+	                            throw new DomainException("LLM 流式生成失败: " + pendingError.getMessage(), pendingError);
+	                        }
+	                        return false;
+	                    }
                     return true;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -165,6 +168,15 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                 handle.cancel();
             }
             thread.interrupt();
-        });
+	        });
+	    }
+
+    private static void enqueue(BlockingQueue<Object> queue, Object value, AtomicReference<Throwable> errorRef) {
+        try {
+            queue.put(value);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            errorRef.compareAndSet(null, e);
+        }
     }
 }

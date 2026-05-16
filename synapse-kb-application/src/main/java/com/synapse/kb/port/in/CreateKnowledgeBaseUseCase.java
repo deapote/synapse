@@ -23,6 +23,6 @@ public interface CreateKnowledgeBaseUseCase {
      * @param name        知识库名称
      * @param description 知识库描述
      */
-    record CreateKnowledgeBaseCommand(String name, String description) {
+    record CreateKnowledgeBaseCommand(String name, String description, String ownerUserId) {
     }
 }

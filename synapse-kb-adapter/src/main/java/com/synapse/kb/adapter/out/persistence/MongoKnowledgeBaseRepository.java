@@ -61,6 +61,7 @@ public class MongoKnowledgeBaseRepository implements KnowledgeBaseRepository {
         doc.setId(kb.getId().value());
         doc.setName(kb.getName());
         doc.setDescription(kb.getDescription());
+        doc.setOwnerUserId(kb.getOwnerUserId());
         doc.setCreatedAt(kb.getCreatedAt());
         return doc;
     }
@@ -70,6 +71,7 @@ public class MongoKnowledgeBaseRepository implements KnowledgeBaseRepository {
                 new KnowledgeBaseId(doc.getId()),
                 doc.getName(),
                 doc.getDescription(),
+                doc.getOwnerUserId(),
                 doc.getCreatedAt()
         );
     }

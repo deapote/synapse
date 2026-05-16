@@ -10,6 +10,6 @@ import java.time.Instant;
  * @param description 知识库描述
  * @param createdAt   创建时间
  */
-public record KnowledgeBaseResponse(String id, String name, String description,
+public record KnowledgeBaseResponse(String id, String name, String description, String ownerUserId,
                                     Instant createdAt) {
 }

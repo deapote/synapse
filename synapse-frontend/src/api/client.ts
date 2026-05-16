@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import axios, { AxiosError } from 'axios'
 import type { ApiError } from '@/types'
+import { clearToken, getStoredToken } from '@/api/token'
 
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
@@ -10,9 +11,23 @@ const client = axios.create({
   }
 })
 
+client.interceptors.request.use((config) => {
+  const token = getStoredToken()
+  if (token) {
+    config.headers[token.tokenName] = token.tokenValue
+  }
+  return config
+})
+
 client.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiError>) => {
+    if (error.response?.status === 401) {
+      clearToken()
+      if (window.location.pathname !== '/login') {
+        window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
+      }
+    }
     if (error.response?.data?.message) {
       return Promise.reject(new Error(error.response.data.message))
     }

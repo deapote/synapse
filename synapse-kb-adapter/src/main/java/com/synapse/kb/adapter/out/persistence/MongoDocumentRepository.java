@@ -8,6 +8,7 @@ import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.repository.DocumentRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -30,9 +31,13 @@ public class MongoDocumentRepository implements DocumentRepository {
 
     @Override
     public Document save(Document document) {
-        DocumentDocument doc = toDocument(document);
-        DocumentDocument saved = documentMongoRepository.save(doc);
-        return toEntity(saved);
+        try {
+            DocumentDocument doc = toDocument(document);
+            DocumentDocument saved = documentMongoRepository.save(doc);
+            return toEntity(saved);
+        } catch (DuplicateKeyException e) {
+            throw new com.synapse.shared.exception.DomainException("此知识库已存在相同内容的文档", e);
+        }
     }
 
     @Override

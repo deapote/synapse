@@ -1,6 +1,7 @@
 package com.synapse.kb.adapter.out.persistence.entity;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
@@ -11,6 +12,8 @@ public class KnowledgeBaseDocument {
     private String id;
     private String name;
     private String description;
+    @Indexed
+    private String ownerUserId;
     private Instant createdAt;
 
     public KnowledgeBaseDocument() {
@@ -38,6 +41,14 @@ public class KnowledgeBaseDocument {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getOwnerUserId() {
+        return ownerUserId;
+    }
+
+    public void setOwnerUserId(String ownerUserId) {
+        this.ownerUserId = ownerUserId;
     }
 
     public Instant getCreatedAt() {
