@@ -1,0 +1,202 @@
+---
+title: Application 层详解
+description: synapse-kb-application 模块 —— 用例编排与端口设计
+---
+
+# Application 层详解
+
+`synapse-kb-application` 是知识库上下文的用例编排层。它协调多个出站端口完成一个完整的业务场景，本身不处理任何技术细节。
+
+## 模块结构
+
+```
+synapse-kb-application/
+├── port/
+│   ├── in/                          # 入站端口（Driving Ports）
+│   │   ├── CreateKnowledgeBaseUseCase.java
+│   │   ├── ListKnowledgeBaseUseCase.java
+│   │   ├── DeleteKnowledgeBaseUseCase.java
+│   │   ├── IngestDocumentUseCase.java
+│   │   ├── ListDocumentUseCase.java
+│   │   ├── DeleteDocumentUseCase.java
+│   │   ├── ProcessIngestionJobUseCase.java
+│   │   ├── RetryDocumentUseCase.java
+│   │   ├── QueryKnowledgeBaseUseCase.java
+│   │   ├── CreateChatSessionUseCase.java
+│   │   ├── ListChatMessageUseCase.java
+│   │   └── StreamChatUseCase.java
+│   └── out/                         # 出站端口（Driven Ports / SPI）
+│       ├── AccessControlPort.java
+│       ├── VectorStorePort.java
+│       ├── ChunkSearchIndexPort.java
+│       ├── EmbeddingPort.java
+│       ├── QueryRewritePort.java
+│       ├── StreamingLlmPort.java
+│       ├── DocumentParserPort.java
+│       ├── KnowledgeBaseRepository.java
+│       ├── DocumentRepository.java
+│       ├── ChatSessionRepository.java
+│       └── ChatMessageRepository.java
+└── service/
+    └── KnowledgeBaseApplicationService.java
+```
+
+## KnowledgeBaseApplicationService
+
+这是知识库上下文的核心应用编排器，实现了 12 个 UseCase 接口。
+
+### 依赖注入设计
+
+```java
+public class KnowledgeBaseApplicationService implements
+        CreateKnowledgeBaseUseCase,
+        IngestDocumentUseCase,
+        QueryKnowledgeBaseUseCase,
+        ... {
+
+    private final KnowledgeBaseRepository knowledgeBaseRepository;
+    private final DocumentRepository documentRepository;
+    private final DocumentParserPort documentParserPort;
+    private final EmbeddingPort embeddingPort;
+    private final VectorStorePort vectorStorePort;
+    // ...
+
+    public KnowledgeBaseApplicationService(
+            KnowledgeBaseRepository knowledgeBaseRepository,
+            DocumentRepository documentRepository, ...) {
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        // ...
+    }
+}
+```
+
+**全是接口！** 这个类不直接和 MongoDB、Milvus、Ollama 打交道，只通过接口调用。
+
+### ingest —— 文档上传编排
+
+```java
+public DocumentId ingest(IngestDocumentCommand command) {
+    // Step 1: 去重检查
+    List<Document> existingDocs = documentRepository
+        .findByKnowledgeBaseIdAndContentHash(command.knowledgeBaseId(), command.contentHash());
+    for (Document existing : existingDocs) {
+        if (existing.getStatus() == COMPLETED || existing.getStatus() == PROCESSING) {
+            throw new DomainException("此知识库已存在相同内容的文档");
+        }
+        if (existing.getStatus() == FAILED) {
+            vectorStorePort.deleteByDocumentId(existing.getKnowledgeBaseId(), existing.getId());
+            documentRepository.deleteById(existing.getId());
+        }
+    }
+
+    // Step 2: 创建文档对象（工厂方法，自动 PENDING）
+    Document document = Document.create(command.knowledgeBaseId(), command.fileName(), ...);
+
+    // Step 3: 保存元数据到 MongoDB
+    document = documentRepository.save(document);
+
+    // Step 4: 处理内容（解析 → 分块 → 向量化 → 存储）
+    processDocument(document, command.content());
+
+    return document.getId();
+}
+```
+
+### processDocument —— 核心处理流水线
+
+```java
+private void processDocument(Document document, InputStream content) {
+    try {
+        document.transitionTo(PROCESSING);
+        documentRepository.save(document);
+
+        String text = documentParserPort.parse(content, document.getFileName());
+        List<DocumentChunk> chunks = recursiveChunkingStrategy.split(text);
+        List<float[]> embeddings = embeddingPort.embed(
+            chunks.stream().map(DocumentChunk::text).toList()
+        );
+        vectorStorePort.store(document.getKnowledgeBaseId(), document.getId(),
+                              document.getFileName(), chunks, embeddings);
+
+        document.setChunkCount(chunks.size());
+        document.transitionTo(COMPLETED);
+
+    } catch (Exception e) {
+        document.setFailureReason(e.getMessage());
+        document.transitionTo(FAILED);
+        throw new DomainException("文档处理失败: " + e.getMessage(), e);
+    } finally {
+        documentRepository.save(document);  // 无论成功失败都保存最终状态
+    }
+}
+```
+
+<Tip>
+  **try-catch-finally 结构**
+  - **try**：正常处理流程
+  - **catch**：任何一步出错 → 记录失败原因 → 状态改为 FAILED → 抛异常
+  - **finally**：不管成功失败 → 保存最终状态到数据库
+</Tip>
+
+### prepare —— RAG 问答检索编排
+
+```java
+public RagContext prepare(Query query) {
+    // 1. Query 改写与质量门禁
+    String rewrittenQuery = queryRewritePort.rewrite(query.text());
+    float[] originalEmbedding = embeddingPort.embed(query.text());
+    float[] rewrittenEmbedding = embeddingPort.embed(rewrittenQuery);
+    double similarity = cosineSimilarity(originalEmbedding, rewrittenEmbedding);
+    String finalQuery = similarity >= 0.8 ? rewrittenQuery : query.text();
+
+    // 2. 问题向量化
+    float[] queryEmbedding = embeddingPort.embed(finalQuery);
+
+    // 3. 并行检索
+    List<ChunkSearchResult> vectorResults = vectorStorePort.search(
+        new KnowledgeBaseId(query.knowledgeBaseId()), queryEmbedding, topK);
+    List<ChunkSearchResult> keywordResults = chunkSearchIndexPort.search(
+        new KnowledgeBaseId(query.knowledgeBaseId()), finalQuery);
+
+    // 4. 融合重排
+    List<ChunkSearchResult> merged = fusionRerank(vectorResults, keywordResults);
+
+    // 5. 组装上下文
+    StringBuilder contextBuilder = new StringBuilder();
+    List<ChunkReference> references = new ArrayList<>();
+    for (int i = 0; i < merged.size(); i++) {
+        ChunkSearchResult result = merged.get(i);
+        contextBuilder.append("[").append(i + 1).append("] ")
+                      .append(result.chunkText()).append("\n\n");
+        references.add(new ChunkReference(i + 1, ...));
+    }
+
+    // 6. 组装 Prompt
+    String prompt = String.format(promptTemplate,
+        contextBuilder.toString(), query.text());
+
+    return new RagContext(prompt, references);
+}
+```
+
+五步完成 RAG：**改写 → 向量 → 检索 → 融合 → 生成 Prompt**。
+
+## 端口设计原则
+
+### 入站端口（UseCase）
+
+- 命名以 `*UseCase` 结尾
+- 定义在 `port/in/` 包下
+- 每个接口对应一个完整的业务用例
+- 参数使用 Command 对象，返回值使用领域对象
+
+### 出站端口（Port）
+
+- 命名以 `*Port` 结尾（Repository 除外）
+- 定义在 `port/out/` 包下
+- 抽象外部技术细节
+- 由 Adapter 层提供具体实现
+
+<Info>
+  Application 层可以记录业务关键日志，但不能依赖 Spring Web、Mongo、Sa-Token、LangChain4j 等 adapter 技术。
+</Info>

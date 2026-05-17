@@ -1,0 +1,59 @@
+---
+title: 知识库接口
+---
+
+## 知识库接口
+
+权限规则：
+
+- `KB_READ`：列表、文档列表、问答
+- `KB_WRITE`：创建知识库、上传文档
+- `KB_DELETE`：删除知识库、删除文档
+- `ADMIN` 可跨用户访问；`USER` 只能访问自己创建的知识库
+
+### 创建知识库
+
+```http
+POST /api/knowledge-bases
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+#### 请求体
+
+```json
+{
+  "name": "产品手册知识库",
+  "description": "存放产品相关文档"
+}
+```
+
+#### 响应
+
+```json
+{
+  "id": "kb-id",
+  "name": "产品手册知识库",
+  "description": "存放产品相关文档",
+  "ownerUserId": "user-id",
+  "createdAt": "2026-05-17T00:00:00Z"
+}
+```
+
+### 知识库列表
+
+```http
+GET /api/knowledge-bases?page=0&size=20
+synapse-token: <tokenValue>
+```
+
+响应为当前用户可访问的 `KnowledgeBaseResponse[]`。
+
+### 删除知识库
+
+```http
+DELETE /api/knowledge-bases/{id}
+synapse-token: <tokenValue>
+```
+
+删除会清理该知识库下文档元数据、Milvus 向量和 Mongo 关键词索引；失败时以错误响应返回，残留数据后续可重试清理。

@@ -1,0 +1,183 @@
+---
+title: 领域模型
+description: Synapse 核心领域模型详解 —— KnowledgeBase、Document、ChatSession 等
+---
+
+# 领域模型
+
+## 认证领域
+
+### UserAccount
+
+用户聚合根，包含用户名、显示名、BCrypt 密码哈希、角色集合、启停状态。
+
+```java
+public class UserAccount {
+    private final UserId id;
+    private final String username;
+    private String displayName;
+    private String passwordHash;      // BCrypt 哈希，永不存明文
+    private Set<RoleName> roles;
+    private boolean enabled;
+    private final Instant createdAt;
+}
+```
+
+### RoleDefinition
+
+角色定义，包含角色名与权限集合。
+
+```java
+public class RoleDefinition {
+    private final RoleName name;
+    private Set<AuthPermission> permissions;
+}
+```
+
+### AuthPermission
+
+权限枚举：
+
+| 权限 | 说明 |
+|------|------|
+| `KB_READ` | 读取知识库、文档列表、问答 |
+| `KB_WRITE` | 创建知识库、上传文档 |
+| `KB_DELETE` | 删除知识库、删除文档 |
+| `AUTH_ADMIN` | 管理用户、角色、权限 |
+
+### RoleName
+
+角色枚举：`ADMIN`（拥有全部权限）、`USER`（拥有 `KB_READ`、`KB_WRITE`）。
+
+## 知识库领域
+
+### KnowledgeBase
+
+知识库聚合根，包含归属用户 `ownerUserId`。
+
+```java
+public class KnowledgeBase {
+    private final KnowledgeBaseId id;
+    private final String name;
+    private String description;
+    private final UserId ownerUserId;
+    private final Instant createdAt;
+}
+```
+
+`USER` 只能访问自己创建的知识库，`ADMIN` 可跨用户访问。
+
+### Document
+
+文档聚合根，独立生命周期，通过 `knowledgeBaseId` 关联知识库。
+
+```java
+public class Document {
+    private final DocumentId id;
+    private final KnowledgeBaseId knowledgeBaseId;
+    private String fileName;
+    private String contentHash;       // SHA-256，用于去重
+    private DocumentStatus status;    // PENDING / PROCESSING / COMPLETED / FAILED
+    private String failureReason;
+    private int chunkCount;
+    private Instant processingStartAt;
+    private Instant processingCompleteAt;
+    private final Instant uploadedAt;
+}
+```
+
+### Query
+
+查询值对象，强制携带 `knowledgeBaseId`，禁止跨库查询。
+
+```java
+public record Query(String knowledgeBaseId, String text) {}
+```
+
+### RagContext
+
+已组装的 prompt 与引用片段列表。
+
+```java
+public record RagContext(
+    String prompt,
+    List<ChunkReference> references
+) {}
+```
+
+### ChunkReference
+
+检索结果引用，供前端展示来源。
+
+```java
+public record ChunkReference(
+    int sourceId,
+    String documentId,
+    String documentName,
+    String chunkText,
+    double score,           // 融合重排后的最终分数，范围 [0, 1]
+    int startPosition,
+    int endPosition,
+    boolean used            // 是否被答案实际引用
+) {}
+```
+
+### ChatSession
+
+聊天会话聚合根，按 `ownerUserId + knowledgeBaseId` 隔离。
+
+```java
+public class ChatSession {
+    private final ChatSessionId id;
+    private final KnowledgeBaseId knowledgeBaseId;
+    private final UserId ownerUserId;
+    private String title;
+    private String summary;       // 历史消息压缩摘要
+    private int messageCount;
+    private Instant updatedAt;
+}
+```
+
+### ChatMessage
+
+单条消息，按 `sessionId + sequence` 有序存储。
+
+```java
+public record ChatMessage(
+    String id,
+    String sessionId,
+    MessageRole role,         // USER / ASSISTANT
+    String content,
+    List<ChunkReference> references,
+    int sequence,
+    Instant createdAt
+) {}
+```
+
+## 值对象设计
+
+### 为什么使用包装类型而非 String？
+
+```java
+// 如果都用 String：
+String docId = "abc-123";
+String kbId = "kb-456";
+document.setKnowledgeBaseId(docId);   // 编译不报错！但逻辑错了！
+
+// 用包装类型后：
+DocumentId docId = DocumentId.generate();
+KnowledgeBaseId kbId = KnowledgeBaseId.generate();
+document.setKnowledgeBaseId(docId);   // 编译报错！类型不匹配！
+```
+
+类型系统帮你避免了"把文档 ID 塞到知识库 ID 位置"的低级错误。
+
+### 基于 UUID 生成
+
+```java
+public static DocumentId generate() {
+    return new DocumentId(UUID.randomUUID().toString());
+}
+```
+
+UUID 是 128 位随机数，转成字符串后形如 `550e8400-e29b-41d4-a716-446655440000`，全球范围内几乎不会重复。

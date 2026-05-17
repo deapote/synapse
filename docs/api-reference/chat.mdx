@@ -1,0 +1,62 @@
+---
+title: 聊天会话接口
+---
+
+## 聊天会话接口
+
+聊天会话按"当前用户 + 知识库"隔离。即使拥有同一个知识库访问权，也不能读取其他用户的会话。
+
+### 获取当前会话
+
+```http
+GET /api/knowledge-bases/{kbId}/chat/sessions/current
+synapse-token: <tokenValue>
+```
+
+若当前用户在该知识库下没有会话，后端会自动创建。
+
+#### 响应
+
+```json
+{
+  "id": "session-id",
+  "knowledgeBaseId": "kb-id",
+  "title": "新对话",
+  "summary": "",
+  "messageCount": 0,
+  "createdAt": "2026-05-17T05:00:00Z",
+  "updatedAt": "2026-05-17T05:00:00Z"
+}
+```
+
+### 新建会话
+
+```http
+POST /api/knowledge-bases/{kbId}/chat/sessions
+synapse-token: <tokenValue>
+```
+
+返回体同当前会话接口。前端"新对话"按钮使用该接口。
+
+### 分页读取消息
+
+```http
+GET /api/chat/sessions/{sessionId}/messages?page=0&size=50
+synapse-token: <tokenValue>
+```
+
+#### 响应
+
+```json
+[
+  {
+    "id": "message-id",
+    "sessionId": "session-id",
+    "role": "assistant",
+    "content": "回答内容",
+    "references": [],
+    "sequence": 2,
+    "createdAt": "2026-05-17T05:01:00Z"
+  }
+]
+```

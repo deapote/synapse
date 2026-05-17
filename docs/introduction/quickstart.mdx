@@ -1,0 +1,108 @@
+---
+title: 快速开始
+description: 5 分钟搭建 Synapse 本地开发环境
+---
+
+# 快速开始
+
+本指南帮助你在本地快速搭建 Synapse 开发环境。
+
+## 环境要求
+
+| 依赖 | 版本要求 | 说明 |
+|------|---------|------|
+| Java | 21+ | 后端运行环境 |
+| Maven | 3.9+ | 构建工具 |
+| Node.js | 18+ | 前端构建 |
+| MongoDB | 6.0+ | 元数据存储 |
+| Milvus | 2.3+ | 向量存储 |
+| Ollama | 最新 | LLM 和 Embedding 服务 |
+
+## 1. 克隆项目
+
+```bash
+git clone https://github.com/sunrise-choir/synapse.git
+cd synapse
+```
+
+## 2. 启动外部服务
+
+### MongoDB
+
+```bash
+docker run -d --name synapse-mongo \
+  -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=password \
+  mongo:6.0
+```
+
+### Milvus
+
+```bash
+# 使用 Milvus Standalone 模式
+curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
+bash standalone_embed.sh start
+```
+
+### Ollama
+
+```bash
+# macOS
+brew install ollama
+ollama serve
+
+# 拉取模型
+ollama pull qwen2.5:7b
+ollama pull gme-qwen2-vl:2b
+```
+
+## 3. 启动后端
+
+```bash
+# 编译并运行
+cd synapse-kb-bootstrap
+mvn spring-boot:run
+```
+
+后端默认运行在 `http://localhost:8082`。
+
+## 4. 启动前端
+
+```bash
+cd synapse-frontend
+npm install
+npm run dev
+```
+
+前端默认运行在 `http://localhost:5173`。
+
+## 5. 首次登录
+
+打开浏览器访问 `http://localhost:5173`，使用默认管理员账号登录：
+
+| 字段 | 值 |
+|------|-----|
+| 用户名 | `admin` |
+| 密码 | `ChangeMe123!` |
+
+<Warning>
+  默认管理员密码仅用于开发环境，生产环境请务必修改！
+</Warning>
+
+## 6. 创建第一个知识库
+
+登录后进入知识库管理页面：
+
+1. 点击"新建知识库"
+2. 输入名称和描述
+3. 进入知识库详情页
+4. 上传文档（支持 PDF、Word、TXT、Markdown）
+5. 等待文档状态变为 `COMPLETED`
+6. 开始问答
+
+## 下一步
+
+- 了解 [技术栈](/introduction/tech-stack)
+- 阅读 [系统架构](/introduction/architecture)
+- 查看 [API 参考](/api-reference/overview)

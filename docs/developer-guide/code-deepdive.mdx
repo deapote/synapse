@@ -1,0 +1,296 @@
+---
+title: 核心代码逐行解读
+description: 从 Java 基础概念到核心类的完整代码走读
+---
+
+# 核心代码逐行解读
+
+## Java 基础概念速查
+
+| 概念 | 一句话解释 | 代码中的例子 |
+|------|-----------|------------|
+| **类（Class）** | 一个模板/蓝图，定义了"这个东西有什么属性、能做什么" | `public class Document {...}` —— 定义了"文档"这个概念 |
+| **对象（Object）** | 根据类这个模板造出来的"实物" | `Document doc = Document.create(...);` —— 造出一个真实的文档对象 |
+| **方法（Method）** | 一段可以重复使用的代码，完成某个具体功能 | `transitionTo(PROCESSING)` —— 改变文档状态 |
+| **字段/属性（Field）** | 对象存储的数据 | `private String fileName;` —— 文档的文件名 |
+| **枚举（enum）** | 限定取值范围，变量只能取 predefined 的几个值 | `DocumentStatus.PENDING` 只能取四个值之一 |
+| **record** | Java 16+ 引入的不可变数据容器，一行顶几十行 | `public record DocumentId(String value) {}` |
+| **final（变量）** | 创建后不能再赋值 | `private final DocumentId id;` —— id 终身不变 |
+| **static** | 属于类本身，不属于某个对象，所有对象共享 | `VALID_TRANSITIONS` 只有一份，存在类上 |
+| **private** | 只有本类内部的代码能访问 | `private Document(...)` —— 外部不能直接 new |
+
+## Document.java —— 领域实体
+
+最核心、最纯粹的 Java 代码，零框架依赖。
+
+### 字段定义：final vs 可变
+
+```java
+public class Document {
+    private final DocumentId id;              // final = 创建后不能改
+    private final KnowledgeBaseId knowledgeBaseId;
+    private String fileName;                   // 可以改（虽然实际上不该改）
+    private DocumentStatus status;             // 一定会变！PENDING → PROCESSING → ...
+    private final Instant uploadedAt;          // 创建时确定，终身不变
+}
+```
+
+**判断标准：** 这个属性在对象创建后还会变化吗？不会 → final；会 → 不用 final。`status` 会流转，所以不用 final。
+
+### 状态机规则：static final Map
+
+```java
+private static final Map<DocumentStatus, Set<DocumentStatus>> VALID_TRANSITIONS = Map.of(
+    DocumentStatus.PENDING,     EnumSet.of(DocumentStatus.PROCESSING),
+    DocumentStatus.PROCESSING,  EnumSet.of(DocumentStatus.COMPLETED, DocumentStatus.FAILED),
+    DocumentStatus.FAILED,      EnumSet.of(DocumentStatus.PENDING),
+    DocumentStatus.COMPLETED,   EnumSet.noneOf(DocumentStatus.class)
+);
+```
+
+这是一个**映射表**（键值对）：键是当前状态，值是允许转到的下一个状态的集合。
+
+### private 构造函数 + 静态工厂方法
+
+```java
+// 私有构造函数 —— 外部不能直接调用
+private Document(DocumentId id, KnowledgeBaseId kbId, String fileName, ...) {
+    this.id = id;
+    this.status = DocumentStatus.PENDING;  // 强制新文档为 PENDING
+}
+
+// 静态工厂方法 —— 业务代码用这个方法创建对象
+public static Document create(KnowledgeBaseId kbId, String fileName, ...) {
+    if (fileName == null || fileName.isBlank()) {
+        throw new DomainException("文件名不能为空");
+    }
+    return new Document(DocumentId.generate(), kbId, fileName, ..., Instant.now());
+}
+```
+
+<Tip>
+  为什么用静态工厂方法而不是直接 new？
+  1. **校验**：创建前检查文件名不为空
+  2. **封装细节**：调用者不用管 id 怎么生成、uploadedAt 是什么时间
+</Tip>
+
+### reconstruct —— 从数据库"还魂"
+
+```java
+public static Document reconstruct(DocumentId id, ..., DocumentStatus status, ...) {
+    // 先走私有构造函数（会强制设 status = PENDING）
+    Document doc = new Document(id, kbId, fileName, ..., uploadedAt);
+    // 再用直接赋值覆盖成数据库里的真实状态
+    doc.status = status;           // 覆盖！数据库里是什么就是什么
+    doc.chunkCount = chunkCount;
+    doc.processingStartAt = processingStartAt;
+    return doc;
+}
+```
+
+<Warning>
+  **create vs reconstruct 的本质区别**
+  - **create**：业务代码调用，"生"一个新文档，强制 PENDING，执行校验
+  - **reconstruct**：仓储层调用，"还魂"一个旧文档，原样还原状态，不执行任何校验
+</Warning>
+
+### transitionTo —— 状态转换的核心
+
+```java
+public void transitionTo(DocumentStatus newStatus) {
+    Set<DocumentStatus> validNext = VALID_TRANSITIONS.get(this.status);
+    if (validNext == null || !validNext.contains(newStatus)) {
+        throw new DomainException("无效的状态转换 " + this.status + "->" + newStatus);
+    }
+    this.status = newStatus;
+    if (newStatus == PROCESSING) {
+        this.processingStartAt = Instant.now();
+    }
+    if (newStatus == COMPLETED || newStatus == FAILED) {
+        this.processingCompleteAt = Instant.now();
+    }
+}
+```
+
+三步走：**查表 → 校验 → 执行 + 副作用**。非法转换直接抛异常，不会进入错误状态。
+
+## DocumentId / KnowledgeBaseId —— 值对象
+
+### 为什么不用 String，而要包装成一个类？
+
+```java
+// 如果都用 String：
+String docId = "abc-123";
+String kbId = "kb-456";
+document.setKnowledgeBaseId(docId);   // 编译不报错！但逻辑错了！
+
+// 用包装类型后：
+DocumentId docId = DocumentId.generate();
+KnowledgeBaseId kbId = KnowledgeBaseId.generate();
+document.setKnowledgeBaseId(docId);   // 编译报错！类型不匹配！
+```
+
+**类型系统帮你避免了"把文档 ID 塞到知识库 ID 位置"的低级错误。**
+
+### 基于 UUID 生成
+
+```java
+public static DocumentId generate() {
+    return new DocumentId(UUID.randomUUID().toString());
+}
+```
+
+UUID 是 128 位随机数，转成字符串后形如 `550e8400-e29b-41d4-a716-446655440000`，全球范围内几乎不会重复。
+
+## KnowledgeBaseApplicationService —— 业务编排
+
+所有用例的统一入口，不处理技术细节，只编排业务步骤。
+
+### 依赖注入：通过构造函数接收工具
+
+```java
+public class KnowledgeBaseApplicationService implements
+        CreateKnowledgeBaseUseCase,
+        IngestDocumentUseCase,
+        QueryKnowledgeBaseUseCase, ... {
+
+    private final KnowledgeBaseRepository knowledgeBaseRepository;
+    private final DocumentRepository documentRepository;
+    private final DocumentParserPort documentParserPort;
+    private final EmbeddingPort embeddingPort;
+    private final VectorStorePort vectorStorePort;
+    // ...
+
+    public KnowledgeBaseApplicationService(
+            KnowledgeBaseRepository knowledgeBaseRepository,
+            DocumentRepository documentRepository, ...) {
+        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        // ...
+    }
+}
+```
+
+**全是接口！** 这个类不直接和 MongoDB、Milvus、Ollama 打交道，只通过接口调用。
+
+### ingest —— 文档上传的完整编排
+
+```java
+public DocumentId ingest(IngestDocumentCommand command) {
+    // Step 1: 去重检查
+    List<Document> existingDocs = documentRepository
+        .findByKnowledgeBaseIdAndContentHash(command.knowledgeBaseId(), command.contentHash());
+    for (Document existing : existingDocs) {
+        if (existing.getStatus() == COMPLETED || existing.getStatus() == PROCESSING) {
+            throw new DomainException("此知识库已存在相同内容的文档");
+        }
+        if (existing.getStatus() == FAILED) {
+            vectorStorePort.deleteByDocumentId(existing.getKnowledgeBaseId(), existing.getId());
+            documentRepository.deleteById(existing.getId());
+        }
+    }
+
+    // Step 2: 创建文档对象（工厂方法，自动 PENDING）
+    Document document = Document.create(command.knowledgeBaseId(), command.fileName(), ...);
+
+    // Step 3: 保存元数据到 MongoDB
+    document = documentRepository.save(document);
+
+    // Step 4: 处理内容（解析 → 分块 → 向量化 → 存储）
+    processDocument(document, command.content());
+
+    return document.getId();
+}
+```
+
+### processDocument —— 核心处理流水线
+
+```java
+private void processDocument(Document document, InputStream content) {
+    try {
+        document.transitionTo(PROCESSING);
+        documentRepository.save(document);
+
+        String text = documentParserPort.parse(content, document.getFileName());
+        List<DocumentChunk> chunks = recursiveChunkingStrategy.split(text);
+        List<float[]> embeddings = embeddingPort.embed(
+            chunks.stream().map(DocumentChunk::text).toList()
+        );
+        vectorStorePort.store(document.getKnowledgeBaseId(), document.getId(),
+                              document.getFileName(), chunks, embeddings);
+
+        document.setChunkCount(chunks.size());
+        document.transitionTo(COMPLETED);
+
+    } catch (Exception e) {
+        document.setFailureReason(e.getMessage());
+        document.transitionTo(FAILED);
+        throw new DomainException("文档处理失败: " + e.getMessage(), e);
+    } finally {
+        documentRepository.save(document);  // 无论成功失败都保存最终状态
+    }
+}
+```
+
+<Tip>
+  **try-catch-finally 结构**
+  - **try**：正常处理流程
+  - **catch**：任何一步出错 → 记录失败原因 → 状态改为 FAILED → 抛异常
+  - **finally**：不管成功失败 → 保存最终状态到数据库
+</Tip>
+
+### prepare —— RAG 问答检索
+
+```java
+public RagContext prepare(Query query) {
+    // 1. 问题向量化
+    float[] queryEmbedding = embeddingPort.embed(query.text());
+
+    // 2. 向量检索 Top-K
+    List<ChunkSearchResult> results = vectorStorePort.search(
+        new KnowledgeBaseId(query.knowledgeBaseId()), queryEmbedding, topK);
+
+    // 3. 组装上下文
+    StringBuilder contextBuilder = new StringBuilder();
+    List<ChunkReference> references = new ArrayList<>();
+    for (int i = 0; i < results.size(); i++) {
+        ChunkSearchResult result = results.get(i);
+        contextBuilder.append("[").append(i + 1).append("] ")
+                      .append(result.chunkText()).append("\n\n");
+        references.add(new ChunkReference(...));
+    }
+
+    // 4. 组装 Prompt
+    String prompt = String.format(promptTemplate,
+        contextBuilder.toString(), query.text());
+
+    // 5. 返回 RagContext
+    return new RagContext(prompt, references);
+}
+```
+
+五步完成 RAG：**问题→向量→检索→组装上下文→生成 Prompt。**
+
+## Stream 流式操作速查
+
+代码中常见的 `.stream().map(...).toList()`：
+
+```java
+List<DocumentChunk> chunks = ...;  // 假设有 3 个分块
+
+chunks.stream()                          // 把 List 变成流
+      .map(DocumentChunk::text)          // 对每个元素取 text 字段
+      .toList();                          // 转回 List<String>
+
+// 结果：["第一章...", "第二章...", "第三章..."]
+```
+
+三步：**stream() 打开流 → map() 转换每个元素 → toList() 收集结果。**
+
+## 待继续探索
+
+本次只读了 Domain 层和 Application 层的核心文件。下一步可以继续深入：
+
+1. **Adapter 层 Controller**：前端请求怎么进入后端？Mono/Flux 是什么？
+2. **Adapter 层 Repository 实现**：MongoDB 怎么存取 Document？
+3. **Adapter 层 LLM 调用**：Ollama 怎么被调用的？SSE 流式输出怎么实现？
+4. **Config 层**：Spring 怎么把这些类组装起来的？

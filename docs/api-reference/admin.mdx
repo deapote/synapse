@@ -1,0 +1,92 @@
+---
+title: 管理接口
+---
+
+## 管理接口
+
+所有管理接口都需要 `AUTH_ADMIN` 权限。
+
+### 用户列表
+
+```http
+GET /api/admin/users?page=0&size=20
+synapse-token: <tokenValue>
+```
+
+分页约束：`page >= 0`，`1 <= size <= synapse.web.max-page-size`。
+
+### 创建用户
+
+```http
+POST /api/admin/users
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+#### 请求体
+
+```json
+{
+  "username": "alice",
+  "displayName": "Alice",
+  "password": "Password123",
+  "roles": ["USER"]
+}
+```
+
+密码至少 8 位，后端使用 BCrypt 保存哈希。
+
+### 修改用户角色
+
+```http
+PUT /api/admin/users/{id}/roles
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+#### 请求体
+
+```json
+{
+  "roles": ["USER"]
+}
+```
+
+### 启停用户
+
+```http
+PUT /api/admin/users/{id}/enabled
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+#### 请求体
+
+```json
+{
+  "enabled": false
+}
+```
+
+### 角色列表
+
+```http
+GET /api/admin/roles
+synapse-token: <tokenValue>
+```
+
+### 修改角色权限
+
+```http
+PUT /api/admin/roles/{roleName}/permissions
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+#### 请求体
+
+```json
+{
+  "permissions": ["KB_READ", "KB_WRITE"]
+}
+```

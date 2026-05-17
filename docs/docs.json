@@ -1,0 +1,98 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Synapse",
+  "description": "基于 Spring Boot + LangChain4j 的多知识库 RAG 系统",
+  "colors": {
+    "primary": "#4F46E5",
+    "light": "#818CF8",
+    "dark": "#3730A3"
+  },
+  "favicon": "logo/favicon.svg",
+  "logo": {
+    "light": "logo/logo-light.svg",
+    "dark": "logo/logo-dark.svg"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "介绍",
+        "pages": [
+          "introduction/index",
+          "introduction/quickstart",
+          "introduction/tech-stack",
+          "introduction/architecture"
+        ]
+      },
+      {
+        "group": "使用指南",
+        "pages": [
+          "guides/authentication",
+          "guides/knowledge-base",
+          "guides/document-upload",
+          "guides/query-and-chat",
+          "guides/admin"
+        ]
+      },
+      {
+        "group": "核心概念",
+        "pages": [
+          "core-concepts/rag-overview",
+          "core-concepts/ddd-layers",
+          "core-concepts/domain-model",
+          "core-concepts/state-machine",
+          "core-concepts/reactive-boundary",
+          "core-concepts/chunking-strategy"
+        ]
+      },
+      {
+        "group": "开发者指南",
+        "pages": [
+          "developer-guide/domain-layer",
+          "developer-guide/application-layer",
+          "developer-guide/adapter-layer",
+          "developer-guide/config-layer",
+          "developer-guide/frontend",
+          "developer-guide/upload-flow",
+          "developer-guide/query-flow",
+          "developer-guide/chat-memory",
+          "developer-guide/code-deepdive"
+        ]
+      },
+      {
+        "group": "API 参考",
+        "pages": [
+          "api-reference/overview",
+          "api-reference/authentication",
+          "api-reference/admin",
+          "api-reference/knowledge-base",
+          "api-reference/document",
+          "api-reference/chat",
+          "api-reference/streaming-query"
+        ]
+      },
+      {
+        "group": "部署",
+        "pages": [
+          "deployment/requirements",
+          "deployment/backend",
+          "deployment/frontend",
+          "deployment/services"
+        ]
+      },
+      {
+        "group": "安全",
+        "pages": [
+          "security/auth-design",
+          "security/rag-safety",
+          "security/cors-config"
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/sunrise-choir/synapse"
+    }
+  }
+}

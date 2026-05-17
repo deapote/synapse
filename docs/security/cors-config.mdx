@@ -1,0 +1,41 @@
+---
+title: CORS 配置
+---
+
+# CORS 配置
+
+## 默认配置
+
+CORS 由 `synapse.cors.allowed-origins` 配置控制。默认只允许本地前端：
+
+```yaml
+synapse:
+  cors:
+    allowed-origins: http://localhost:5173,http://127.0.0.1:5173
+```
+
+## 生产环境配置
+
+生产环境必须显式配置真实前端域名：
+
+```yaml
+synapse:
+  cors:
+    allowed-origins: https://your-frontend-domain.com
+```
+
+## 配置说明
+
+| 配置项 | 说明 |
+|--------|------|
+| `allowed-origins` | 允许的前端来源，多个用逗号分隔 |
+| `allowed-methods` | 允许的 HTTP 方法，默认 GET、POST、PUT、DELETE、OPTIONS |
+| `allowed-headers` | 允许的请求头，默认 * |
+| `allow-credentials` | 是否允许携带凭证，默认 true |
+
+## 安全建议
+
+1. 生产环境不要使用 `*` 通配符
+2. 明确列出所有允许的前端域名
+3. 定期审查 CORS 配置
+4. 配合 HTTPS 使用，防止中间人攻击

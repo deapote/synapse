@@ -1,0 +1,166 @@
+---
+title: Domain 层详解
+description: synapse-kb-domain 模块核心类与方法解析
+---
+
+# Domain 层详解
+
+`synapse-kb-domain` 是纯 Java 模块，零框架依赖。它定义了知识库上下文的核心概念、规则和约束。
+
+## 模块结构
+
+```
+synapse-kb-domain/
+├── model/
+│   ├── KnowledgeBase.java
+│   ├── Document.java
+│   ├── ChatSession.java
+│   ├── ChatMessage.java
+│   ├── Query.java
+│   ├── RagContext.java
+│   ├── ChunkReference.java
+│   ├── DocumentChunk.java
+│   ├── DocumentStatus.java
+│   └── IngestionJobStatus.java
+├── repository/
+│   ├── KnowledgeBaseRepository.java
+│   └── DocumentRepository.java
+├── service/
+│   └── RecursiveChunkingStrategy.java
+└── exception/
+    └── IngestionException.java
+```
+
+## Document —— 核心领域实体
+
+### 字段设计：final vs 可变
+
+```java
+public class Document {
+    private final DocumentId id;              // final = 创建后不能改
+    private final KnowledgeBaseId knowledgeBaseId;
+    private String fileName;                   // 可以改（虽然实际上不该改）
+    private DocumentStatus status;             // 一定会变！PENDING → PROCESSING → ...
+    private final Instant uploadedAt;          // 创建时确定，终身不变
+}
+```
+
+**判断标准：** 这个属性在对象创建后还会变化吗？不会 → final；会 → 不用 final。`status` 会流转，所以不用 final。
+
+### 状态机规则：static final Map
+
+```java
+private static final Map<DocumentStatus, Set<DocumentStatus>> VALID_TRANSITIONS = Map.of(
+    DocumentStatus.PENDING,     EnumSet.of(DocumentStatus.PROCESSING),
+    DocumentStatus.PROCESSING,  EnumSet.of(DocumentStatus.COMPLETED, DocumentStatus.FAILED),
+    DocumentStatus.FAILED,      EnumSet.of(DocumentStatus.PENDING),
+    DocumentStatus.COMPLETED,   EnumSet.noneOf(DocumentStatus.class)
+);
+```
+
+这是一个**映射表**（键值对）：键是当前状态，值是允许转到的下一个状态的集合。
+
+| 转换 | 说明 |
+|------|------|
+| `PENDING → PROCESSING` | 只能转到处理中 |
+| `PROCESSING → COMPLETED 或 FAILED` | 两个分支 |
+| `FAILED → PENDING` | 支持重试 |
+| `COMPLETED → （无）` | 终态，不能再转 |
+
+### private 构造函数 + 静态工厂方法
+
+```java
+// 私有构造函数 —— 外部不能直接调用
+private Document(DocumentId id, KnowledgeBaseId kbId, String fileName, ...) {
+    this.id = id;
+    this.status = DocumentStatus.PENDING;  // 强制新文档为 PENDING
+}
+
+// 静态工厂方法 —— 业务代码用这个方法创建对象
+public static Document create(KnowledgeBaseId kbId, String fileName, ...) {
+    if (fileName == null || fileName.isBlank()) {
+        throw new DomainException("文件名不能为空");
+    }
+    return new Document(DocumentId.generate(), kbId, fileName, ..., Instant.now());
+}
+```
+
+<Tip>
+  为什么用静态工厂方法而不是直接 new？
+  1. **校验**：创建前检查文件名不为空
+  2. **封装细节**：调用者不用管 id 怎么生成、uploadedAt 是什么时间
+</Tip>
+
+### reconstruct —— 从数据库"还魂"
+
+```java
+public static Document reconstruct(DocumentId id, ..., DocumentStatus status, ...) {
+    // 先走私有构造函数（会强制设 status = PENDING）
+    Document doc = new Document(id, kbId, fileName, ..., uploadedAt);
+    // 再用直接赋值覆盖成数据库里的真实状态
+    doc.status = status;           // 覆盖！数据库里是什么就是什么
+    doc.chunkCount = chunkCount;
+    doc.processingStartAt = processingStartAt;
+    return doc;
+}
+```
+
+<Warning>
+  **create vs reconstruct 的本质区别**
+  - **create**：业务代码调用，"生"一个新文档，强制 PENDING，执行校验
+  - **reconstruct**：仓储层调用，"还魂"一个旧文档，原样还原状态，不执行任何校验
+</Warning>
+
+### transitionTo —— 状态转换的核心
+
+```java
+public void transitionTo(DocumentStatus newStatus) {
+    Set<DocumentStatus> validNext = VALID_TRANSITIONS.get(this.status);
+    if (validNext == null || !validNext.contains(newStatus)) {
+        throw new DomainException("无效的状态转换 " + this.status + "->" + newStatus);
+    }
+    this.status = newStatus;
+    if (newStatus == PROCESSING) {
+        this.processingStartAt = Instant.now();
+    }
+    if (newStatus == COMPLETED || newStatus == FAILED) {
+        this.processingCompleteAt = Instant.now();
+    }
+}
+```
+
+三步走：**查表 → 校验 → 执行 + 副作用**。非法转换直接抛异常，不会进入错误状态。
+
+## 值对象设计
+
+### DocumentId / KnowledgeBaseId
+
+为什么不用 String，而要包装成一个类？
+
+```java
+// 如果都用 String：
+String docId = "abc-123";
+String kbId = "kb-456";
+document.setKnowledgeBaseId(docId);   // 编译不报错！但逻辑错了！
+
+// 用包装类型后：
+DocumentId docId = DocumentId.generate();
+KnowledgeBaseId kbId = KnowledgeBaseId.generate();
+document.setKnowledgeBaseId(docId);   // 编译报错！类型不匹配！
+```
+
+**类型系统帮你避免了"把文档 ID 塞到知识库 ID 位置"的低级错误。**
+
+### 基于 UUID 生成
+
+```java
+public static DocumentId generate() {
+    return new DocumentId(UUID.randomUUID().toString());
+}
+```
+
+UUID 是一个 128 位的随机数，转成字符串后形如 `550e8400-e29b-41d4-a716-446655440000`，全球范围内几乎不会重复。
+
+## RecursiveChunkingStrategy
+
+详见 [文本分块策略](/core-concepts/chunking-strategy)。

@@ -1,0 +1,70 @@
+---
+title: 流式问答接口
+---
+
+## 流式问答接口
+
+```http
+POST /api/knowledge-bases/{kbId}/query/stream
+Content-Type: application/json
+Accept: text/event-stream
+synapse-token: <tokenValue>
+```
+
+### 请求体
+
+```json
+{
+  "query": "这篇文档的主要内容是什么？",
+  "sessionId": "可选。为空时使用或创建当前用户在该知识库下的最新会话"
+}
+```
+
+### SSE 事件
+
+```text
+event: session
+data: {"sessionId":"session-id"}
+
+event: token
+data: {"token":"文本片段"}
+
+event: references
+data: {"references":[{"sourceId":1,"documentId":"doc-id","documentName":"产品手册.pdf","chunkText":"...","score":0.91,"startPosition":0,"endPosition":200,"used":true}]}
+
+event: validation
+data: {"trusted":true,"usedSourceIds":[1],"warnings":[]}
+
+event: complete
+data: {"sessionId":"session-id"}
+```
+
+### 失败响应
+
+```text
+event: error
+data: {"message":"错误信息","traceId":"trace-id"}
+```
+
+### 事件说明
+
+| 事件         | 说明                              |
+| ------------ | --------------------------------- |
+| `session`    | 会话信息                          |
+| `token`      | 文本片段，会发送多次，组成完整回答 |
+| `references` | 引用来源列表                       |
+| `validation` | 引用编号是否合法、哪些来源被实际使用 |
+| `complete`   | 生成完成                          |
+| `error`      | 处理异常                          |
+
+### 安全设计
+
+后端在 prompt 中用 `<source>` 和 `<user_question>` 边界标记隔离检索片段和用户问题，并明确检索内容不具备指令优先级，以降低文档 prompt 注入风险。每个检索片段会分配 `sourceId`，模型回答应使用 `[1]` 形式引用来源。`validation` 事件用于返回引用编号是否合法、哪些来源被答案实际使用，以及引用校验警告。
+
+### 检索链路
+
+查询链路会先尝试 Query 改写，并用原 query 与改写 query 的 embedding 余弦相似度做质量门禁；默认阈值为 `0.8`，未通过或改写失败时自动回退原 query。检索结果来自 Milvus 向量召回与 Mongo BM25 关键词召回的融合重排，`score` 为融合后的最终分数。
+
+### 聊天记忆
+
+聊天记忆会在生成前保存用户消息，并把会话摘要与最近消息拼入 prompt；生成成功后保存 assistant 消息和引用。若生成失败，不保存半截 assistant 回复。

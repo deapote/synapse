@@ -1,0 +1,51 @@
+---
+title: 鉴权设计
+---
+
+# 鉴权设计
+
+## Sa-Token Reactor
+
+Synapse 使用 Sa-Token Reactor 负责 WebFlux 登录态校验：
+
+- 除 `/api/auth/login` 外，所有 `/api/**` 都必须登录
+- 角色权限通过 `SaTokenPermissionAdapter` 从 MongoDB 读取
+- Controller 调用同步应用服务时通过 Sa-Token Reactor 上下文桥接，避免线程切换丢失上下文
+
+## 管理接口
+
+管理接口统一校验 `AUTH_ADMIN`：
+
+```java
+@SaCheckPermission("AUTH_ADMIN")
+@GetMapping("/api/admin/users")
+public Mono<List<UserResponse>> listUsers(...) { ... }
+```
+
+## 知识库归属校验
+
+KB/文档/问答接口同时校验权限和知识库归属：
+
+```java
+// 1. 校验权限
+SaCheckPermission("KB_READ")
+
+// 2. 校验归属
+if (!currentUser.isAdmin() && !kb.getOwnerUserId().equals(currentUser.getId())) {
+    throw new DomainException("无权访问该知识库");
+}
+```
+
+## 聊天记忆隔离
+
+聊天记忆按 `ownerUserId + knowledgeBaseId + sessionId` 隔离：
+
+- 用户不能读取其他用户的会话
+- 即使 ADMIN 有所有权限，也不能读取其他用户的聊天历史
+- 会话 API 必须校验当前用户为 `ownerUserId`
+
+## 密码安全
+
+- 密码只存 BCrypt 哈希，不保存明文
+- 默认管理员密码仅用于开发，启动时会打印告警
+- 密码至少 8 位，包含大小写字母和数字
