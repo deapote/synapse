@@ -1,11 +1,12 @@
 import client from '@/api/client'
-import type { ChatMessageResponse, ChatSession, ChunkReference } from '@/types'
+import type { ChatMessageResponse, ChatSession, ChunkReference, CitationValidation } from '@/types'
 import { clearToken, getStoredToken } from '@/api/token'
 
 export interface StreamCallbacks {
   onSession?: (sessionId: string) => void
   onToken: (token: string) => void
   onReferences: (references: ChunkReference[]) => void
+  onValidation?: (validation: CitationValidation) => void
   onComplete: () => void
   onError: (message: string) => void
 }
@@ -115,6 +116,8 @@ export function streamQueryKnowledgeBase(
             callbacks.onToken(payload.token)
           } else if (event === 'references') {
             callbacks.onReferences(payload.references)
+          } else if (event === 'validation') {
+            callbacks.onValidation?.(payload)
           } else if (event === 'complete') {
             terminalEventReceived = true
             callbacks.onComplete()

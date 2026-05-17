@@ -34,6 +34,8 @@ public class DocumentDocument {
     @Indexed
     private String contentHash;
 
+    private String contentObjectId;
+
     private Instant processingStartAt;
 
     private Instant processingCompleteAt;
@@ -118,6 +120,14 @@ public class DocumentDocument {
 
     public void setContentHash(String contentHash) {
         this.contentHash = contentHash;
+    }
+
+    public String getContentObjectId() {
+        return contentObjectId;
+    }
+
+    public void setContentObjectId(String contentObjectId) {
+        this.contentObjectId = contentObjectId;
     }
 
     public Instant getProcessingStartAt() {

@@ -87,12 +87,20 @@ export interface QueryRequest {
 }
 
 export interface ChunkReference {
+  sourceId: number
   documentId: string
   documentName: string
   chunkText: string
   score: number
   startPosition: number
   endPosition: number
+  used?: boolean | null
+}
+
+export interface CitationValidation {
+  trusted: boolean
+  usedSourceIds: number[]
+  warnings: string[]
 }
 
 // ========== API 错误 ==========
@@ -123,6 +131,7 @@ export interface ChatMessage {
   role: MessageRole
   content: string
   references?: ChunkReference[]
+  validation?: CitationValidation
   createdAt: number
 }
 

@@ -3,8 +3,11 @@ package com.synapse.kb.adapter.out.persistence;
 import com.synapse.kb.adapter.out.persistence.entity.DocumentDocument;
 import com.synapse.kb.adapter.out.persistence.entity.KnowledgeBaseDocument;
 import com.synapse.kb.adapter.out.persistence.entity.ChunkIndexDocument;
+import com.synapse.kb.adapter.out.persistence.entity.ChunkPostingDocument;
+import com.synapse.kb.adapter.out.persistence.entity.ChunkCorpusStatsDocument;
 import com.synapse.kb.adapter.out.persistence.entity.ChatMessageDocument;
 import com.synapse.kb.adapter.out.persistence.entity.ChatSessionDocument;
+import com.synapse.kb.adapter.out.persistence.entity.IngestionJobDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
@@ -43,6 +46,24 @@ public class MongoIndexInitializer {
                         .ensureIndex(new CompoundIndexDefinition(
                                 org.bson.Document.parse("{'knowledgeBaseId': 1, 'tokens': 1}"))
                                 .named("idx_chunk_kb_tokens"));
+                mongoTemplate.indexOps(ChunkPostingDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'knowledgeBaseId': 1, 'token': 1}"))
+                                .named("idx_posting_kb_token"));
+                mongoTemplate.indexOps(ChunkPostingDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'knowledgeBaseId': 1, 'documentId': 1}"))
+                                .named("idx_posting_kb_doc"));
+                mongoTemplate.indexOps(ChunkCorpusStatsDocument.class)
+                        .ensureIndex(new Index().on("knowledgeBaseId", Sort.Direction.ASC).named("idx_chunk_stats_kb"));
+                mongoTemplate.indexOps(IngestionJobDocument.class)
+                        .ensureIndex(new Index().on("documentId", Sort.Direction.ASC).named("idx_ingestion_document"));
+                mongoTemplate.indexOps(IngestionJobDocument.class)
+                        .ensureIndex(new Index().on("knowledgeBaseId", Sort.Direction.ASC).named("idx_ingestion_kb"));
+                mongoTemplate.indexOps(IngestionJobDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'status': 1, 'nextRunAt': 1, 'leaseExpiresAt': 1}"))
+                                .named("idx_ingestion_claim"));
                 mongoTemplate.indexOps(ChatSessionDocument.class)
                         .ensureIndex(new CompoundIndexDefinition(
                                 org.bson.Document.parse("{'ownerUserId': 1, 'knowledgeBaseId': 1, 'updatedAt': -1}"))

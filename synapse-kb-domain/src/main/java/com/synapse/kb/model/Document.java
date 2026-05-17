@@ -21,6 +21,7 @@ public class Document {
     private String failureReason;
     private int chunkCount;
     private String contentHash;
+    private String contentObjectId;
     private Instant processingStartAt;
     private Instant processingCompleteAt;
 
@@ -51,6 +52,13 @@ public class Document {
         return new Document(DocumentId.generate(), knowledgeBaseId, fileName, fileType, fileSize, contentHash, Instant.now());
     }
 
+    public void attachContentObject(String contentObjectId) {
+        if (contentObjectId == null || contentObjectId.isBlank()) {
+            throw new DomainException("文档内容对象ID不能为空");
+        }
+        this.contentObjectId = contentObjectId;
+    }
+
     /** 仅供仓储层重建聚合根使用，避免触发状态机副作用。 */
     public static Document reconstruct(
             DocumentId id,
@@ -63,6 +71,7 @@ public class Document {
             DocumentStatus status,
             String failureReason,
             int chunkCount,
+            String contentObjectId,
             Instant processingStartAt,
             Instant processingCompleteAt) {
 
@@ -70,6 +79,7 @@ public class Document {
         doc.status = status;
         doc.failureReason = failureReason;
         doc.chunkCount = chunkCount;
+        doc.contentObjectId = contentObjectId;
         doc.processingStartAt = processingStartAt;
         doc.processingCompleteAt = processingCompleteAt;
         return doc;
@@ -87,6 +97,8 @@ public class Document {
         this.status = newStatus;
         if (newStatus == DocumentStatus.PROCESSING) {
             this.processingStartAt = Instant.now();
+            this.processingCompleteAt = null;
+            this.failureReason = null;
         }
         if (newStatus == DocumentStatus.COMPLETED || newStatus == DocumentStatus.FAILED) {
             this.processingCompleteAt = Instant.now();
@@ -94,6 +106,14 @@ public class Document {
         if (newStatus == DocumentStatus.FAILED && failureReason != null) {
             this.failureReason = failureReason;
         }
+    }
+
+    public void retry() {
+        transitionTo(DocumentStatus.PENDING);
+        this.processingStartAt = null;
+        this.processingCompleteAt = null;
+        this.failureReason = null;
+        this.chunkCount = 0;
     }
 
     public void setChunkCount(int count) {
@@ -141,6 +161,10 @@ public class Document {
 
     public String getContentHash() {
         return contentHash;
+    }
+
+    public String getContentObjectId() {
+        return contentObjectId;
     }
 
     public Instant getProcessingStartAt() {

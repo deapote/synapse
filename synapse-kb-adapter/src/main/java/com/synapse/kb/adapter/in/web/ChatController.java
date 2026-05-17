@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.stream.IntStream;
 
 @RestController
 public class ChatController {
@@ -79,20 +80,24 @@ public class ChatController {
                 message.sessionId().value(),
                 message.role() == ChatRole.USER ? "user" : "assistant",
                 message.content(),
-                message.references().stream().map(this::toResponse).toList(),
+                IntStream.range(0, message.references().size())
+                        .mapToObj(index -> toResponse(message.references().get(index), index + 1, null))
+                        .toList(),
                 message.sequence(),
                 message.createdAt()
         );
     }
 
-    private ChunkReferenceResponse toResponse(ChunkReference ref) {
+    private ChunkReferenceResponse toResponse(ChunkReference ref, int sourceId, Boolean used) {
         return new ChunkReferenceResponse(
+                sourceId,
                 ref.documentId(),
                 ref.documentName(),
                 ref.chunkText(),
                 ref.score(),
                 ref.startPosition(),
-                ref.endPosition()
+                ref.endPosition(),
+                used
         );
     }
 }

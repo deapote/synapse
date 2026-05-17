@@ -22,4 +22,10 @@ import AppSidebar from '@/components/AppSidebar.vue'
   margin-left: var(--sidebar-w);
   min-height: 100vh;
 }
+
+@media (max-width: 720px) {
+  .main-content {
+    margin-left: 72px;
+  }
+}
 </style>

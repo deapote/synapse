@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/query'
-import type { ChatMessage, ChatMessageResponse, ChatSession, ChunkReference } from '@/types'
+import type { ChatMessage, ChatMessageResponse, ChatSession, ChunkReference, CitationValidation } from '@/types'
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10)
@@ -110,6 +110,22 @@ export const useChatStore = defineStore('chat', () => {
         const lastMsg = messages.value[messages.value.length - 1]
         if (lastMsg?.role === 'assistant') {
           lastMsg.references = references
+        }
+      },
+
+      onValidation: (validation: CitationValidation) => {
+        if (generation !== currentGeneration) return
+        flushTokens()
+        const lastMsg = messages.value[messages.value.length - 1]
+        if (lastMsg?.role === 'assistant') {
+          lastMsg.validation = validation
+          if (lastMsg.references && validation.usedSourceIds.length > 0) {
+            const usedIds = new Set(validation.usedSourceIds)
+            lastMsg.references = lastMsg.references.map((reference) => ({
+              ...reference,
+              used: usedIds.has(reference.sourceId)
+            }))
+          }
         }
       },
 

@@ -96,6 +96,7 @@ public class MongoDocumentRepository implements DocumentRepository {
         doc.setFailureReason(document.getFailureReason());
         doc.setChunkCount(document.getChunkCount());
         doc.setContentHash(document.getContentHash());
+        doc.setContentObjectId(document.getContentObjectId());
         doc.setProcessingStartAt(document.getProcessingStartAt());
         doc.setProcessingCompleteAt(document.getProcessingCompleteAt());
         return doc;
@@ -117,6 +118,7 @@ public class MongoDocumentRepository implements DocumentRepository {
                 status,
                 doc.getFailureReason(),
                 doc.getChunkCount(),
+                doc.getContentObjectId(),
                 doc.getProcessingStartAt(),
                 doc.getProcessingCompleteAt()
         );

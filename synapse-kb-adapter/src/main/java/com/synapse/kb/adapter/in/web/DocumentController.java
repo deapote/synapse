@@ -7,6 +7,7 @@ import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.in.DeleteDocumentUseCase;
 import com.synapse.kb.port.in.IngestDocumentUseCase;
 import com.synapse.kb.port.in.ListDocumentUseCase;
+import com.synapse.kb.port.in.RetryDocumentIngestionUseCase;
 import com.synapse.shared.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.buffer.DataBufferUtils;
@@ -31,6 +32,7 @@ public class DocumentController {
     private final IngestDocumentUseCase ingestUseCase;
     private final ListDocumentUseCase listUseCase;
     private final DeleteDocumentUseCase deleteUseCase;
+    private final RetryDocumentIngestionUseCase retryUseCase;
     private final long maxFileBytes;
     private final List<String> allowedExtensions;
     private final List<String> allowedContentTypes;
@@ -39,6 +41,7 @@ public class DocumentController {
     public DocumentController(IngestDocumentUseCase ingestUseCase,
                               ListDocumentUseCase listUseCase,
                               DeleteDocumentUseCase deleteUseCase,
+                              RetryDocumentIngestionUseCase retryUseCase,
                               @Value("${synapse.upload.max-file-bytes:20971520}") long maxFileBytes,
                               @Value("${synapse.upload.allowed-extensions:pdf,doc,docx,txt,md}") List<String> allowedExtensions,
                               @Value("${synapse.upload.allowed-content-types:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown}") List<String> allowedContentTypes,
@@ -46,6 +49,7 @@ public class DocumentController {
         this.ingestUseCase = ingestUseCase;
         this.listUseCase = listUseCase;
         this.deleteUseCase = deleteUseCase;
+        this.retryUseCase = retryUseCase;
         this.maxFileBytes = maxFileBytes;
         this.allowedExtensions = allowedExtensions;
         this.allowedContentTypes = allowedContentTypes;
@@ -131,6 +135,11 @@ public class DocumentController {
         return SaTokenReactorBridge.blockingAction(() -> deleteUseCase.delete(new DocumentId(id)));
     }
 
+    @PostMapping("/api/documents/{id}/retry")
+    public Mono<DocumentResponse> retry(@PathVariable String id) {
+        return SaTokenReactorBridge.blockingCall(() -> toResponse(retryUseCase.retry(new DocumentId(id))));
+    }
+
     private String bytesToHex(byte[] bytes) throws NoSuchAlgorithmException {
         StringBuilder sb = new StringBuilder();
         for (byte b : bytes) {
@@ -179,5 +188,18 @@ public class DocumentController {
         if (!contentTypeAllowed) {
             throw new DomainException("不支持的文件内容类型");
         }
+    }
+
+    private DocumentResponse toResponse(Document doc) {
+        return new DocumentResponse(
+                doc.getId().value(),
+                doc.getKnowledgeBaseId().value(),
+                doc.getFileName(),
+                doc.getFileType(),
+                doc.getFileSize(),
+                doc.getStatus().name(),
+                doc.getChunkCount(),
+                doc.getUploadedAt()
+        );
     }
 }

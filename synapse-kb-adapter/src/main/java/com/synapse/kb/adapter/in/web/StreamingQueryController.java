@@ -2,6 +2,7 @@ package com.synapse.kb.adapter.in.web;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.synapse.kb.adapter.in.web.dto.CitationValidationResponse;
 import com.synapse.kb.adapter.in.web.dto.ChunkReferenceResponse;
 import com.synapse.kb.adapter.in.web.dto.QueryRequest;
 import com.synapse.kb.model.ChunkReference;
@@ -10,6 +11,9 @@ import com.synapse.kb.model.Query;
 import com.synapse.kb.model.RagContext;
 import com.synapse.kb.port.in.QueryKnowledgeBaseUseCase;
 import com.synapse.kb.port.out.StreamingLlmPort;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -19,28 +23,43 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
- * SSE 问答接口适配器。事件协议：session、token、references、complete、error。
+ * SSE 问答接口适配器。事件协议：session、token、references、validation、complete、error。
  */
 @RestController
 public class StreamingQueryController {
 
     private static final Logger log = LoggerFactory.getLogger(StreamingQueryController.class);
+    private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d+)]");
+    private static final Pattern ANSWER_SEGMENT_SPLIT_PATTERN = Pattern.compile("\\n+");
 
     private final QueryKnowledgeBaseUseCase queryUseCase;
     private final StreamingLlmPort streamingLlmPort;
     private final ObjectMapper objectMapper;
+    private final Counter sseCancelledCounter;
+    private final Counter sseErrorCounter;
+    private final Timer firstTokenTimer;
 
     public StreamingQueryController(QueryKnowledgeBaseUseCase queryUseCase,
                                     StreamingLlmPort streamingLlmPort,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    MeterRegistry meterRegistry) {
         this.queryUseCase = queryUseCase;
         this.streamingLlmPort = streamingLlmPort;
         this.objectMapper = objectMapper;
+        this.sseCancelledCounter = Counter.builder("synapse.sse.cancelled").register(meterRegistry);
+        this.sseErrorCounter = Counter.builder("synapse.sse.error").register(meterRegistry);
+        this.firstTokenTimer = Timer.builder("synapse.llm.first_token").register(meterRegistry);
     }
 
     @PostMapping(value = "/api/knowledge-bases/{kbId}/query/stream",
@@ -53,8 +72,9 @@ public class StreamingQueryController {
                         () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query(), request.sessionId())))
                 .flatMapMany(this::buildSseFlux)
                 .onErrorResume(e -> {
+                    sseErrorCounter.increment();
                     log.error("流式问答失败", e);
-                    return Flux.just(sseEvent("error", Map.of("message", e.getMessage())));
+                    return Flux.just(sseEvent("error", safeErrorPayload("流式问答失败")));
                 });
     }
 
@@ -66,20 +86,41 @@ public class StreamingQueryController {
                 () -> streamingLlmPort.generateStream(ragContext.prompt()),
                 stream -> {
                     StringBuilder answerBuilder = new StringBuilder();
+                    long startNanos = System.nanoTime();
+                    boolean[] firstTokenSeen = {false};
                     Flux<ServerSentEvent<String>> tokenFlux = Flux.fromStream(stream)
-                            .doOnNext(answerBuilder::append)
-                            .doOnCancel(() -> log.debug("SSE 连接被取消（用户停止生成）"))
+                            .doOnNext(token -> {
+                                if (!firstTokenSeen[0]) {
+                                    firstTokenSeen[0] = true;
+                                    firstTokenTimer.record(System.nanoTime() - startNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+                                }
+                                answerBuilder.append(token);
+                            })
+                            .doOnCancel(() -> {
+                                sseCancelledCounter.increment();
+                                log.debug("SSE 连接被取消（用户停止生成）");
+                            })
                             .map(token -> sseEvent("token", Map.of("token", token)));
-
-                    List<ChunkReferenceResponse> references = ragContext.references().stream()
-                            .map(this::toResponse)
-                            .toList();
 
                     Flux<ServerSentEvent<String>> sessionFlux = ragContext.sessionId() == null
                             ? Flux.empty()
                             : Flux.just(sseEvent("session", Map.of("sessionId", ragContext.sessionId())));
-                    ServerSentEvent<String> refsEvent = sseEvent("references", Map.of("references", references));
-                    Mono<ServerSentEvent<String>> completeEvent = Mono.fromCallable(() -> {
+
+                    Flux<ServerSentEvent<String>> terminalFlux = Flux.defer(() -> {
+                        CitationValidationResponse validation = validateAnswer(
+                                answerBuilder.toString(),
+                                ragContext.references().size()
+                        );
+                        Set<Integer> usedSourceIds = new LinkedHashSet<>(validation.usedSourceIds());
+                        List<ChunkReferenceResponse> references = IntStream.range(0, ragContext.references().size())
+                                .mapToObj(index -> toResponse(
+                                        ragContext.references().get(index),
+                                        index + 1,
+                                        usedSourceIds.contains(index + 1)))
+                                .toList();
+                        ServerSentEvent<String> refsEvent = sseEvent("references", Map.of("references", references));
+                        ServerSentEvent<String> validationEvent = sseEvent("validation", validation);
+                        Mono<ServerSentEvent<String>> completeEvent = Mono.fromCallable(() -> {
                                 queryUseCase.complete(ragContext, answerBuilder.toString());
                                 Object payload = ragContext.sessionId() == null
                                         ? Map.of()
@@ -89,24 +130,86 @@ public class StreamingQueryController {
                             .subscribeOn(Schedulers.boundedElastic())
                             .onErrorResume(e -> {
                                 log.error("保存聊天回复失败 sessionId={}", ragContext.sessionId(), e);
-                                return Mono.just(sseEvent("error", Map.of("message", "回答已生成但保存聊天记录失败")));
+                                return Mono.just(sseEvent("error", safeErrorPayload("回答已生成但保存聊天记录失败")));
                             });
+                        return Flux.concat(Flux.just(refsEvent, validationEvent), completeEvent);
+                    });
 
-                    return Flux.concat(sessionFlux, tokenFlux, Flux.just(refsEvent), completeEvent);
+                    return Flux.concat(sessionFlux, tokenFlux, terminalFlux);
                 },
                 Stream::close
         );
     }
 
-    private ChunkReferenceResponse toResponse(ChunkReference ref) {
+    private ChunkReferenceResponse toResponse(ChunkReference ref, int sourceId, boolean used) {
         return new ChunkReferenceResponse(
+                sourceId,
                 ref.documentId(),
                 ref.documentName(),
                 ref.chunkText(),
                 ref.score(),
                 ref.startPosition(),
-                ref.endPosition()
+                ref.endPosition(),
+                used
         );
+    }
+
+    CitationValidationResponse validateAnswer(String answer, int referenceCount) {
+        String safeAnswer = answer == null ? "" : answer.strip();
+        Set<Integer> usedSourceIds = new LinkedHashSet<>();
+        List<String> warnings = new ArrayList<>();
+
+        Matcher matcher = CITATION_PATTERN.matcher(safeAnswer);
+        while (matcher.find()) {
+            int sourceId = Integer.parseInt(matcher.group(1));
+            if (sourceId < 1 || sourceId > referenceCount) {
+                warnings.add("回答引用了不存在的来源 [" + sourceId + "]");
+                continue;
+            }
+            usedSourceIds.add(sourceId);
+        }
+
+        boolean insufficientAnswer = isInsufficientAnswer(safeAnswer);
+        if (!safeAnswer.isBlank() && !insufficientAnswer && referenceCount > 0) {
+            if (usedSourceIds.isEmpty()) {
+                warnings.add("回答没有引用任何检索来源");
+            } else {
+                List<String> unsupportedSegments = unsupportedSegments(safeAnswer);
+                if (!unsupportedSegments.isEmpty()) {
+                    warnings.add("存在未带来源引用的事实性表述");
+                }
+            }
+        }
+
+        return new CitationValidationResponse(
+                warnings.isEmpty(),
+                List.copyOf(usedSourceIds),
+                List.copyOf(warnings)
+        );
+    }
+
+    private boolean isInsufficientAnswer(String answer) {
+        return answer.contains("知识库片段不足")
+                || answer.contains("资料不足")
+                || answer.contains("无法回答")
+                || answer.contains("不能回答")
+                || answer.contains("没有足够");
+    }
+
+    private List<String> unsupportedSegments(String answer) {
+        List<String> segments = new ArrayList<>();
+        for (String rawSegment : ANSWER_SEGMENT_SPLIT_PATTERN.split(answer)) {
+            String segment = rawSegment.strip();
+            if (segment.isBlank()
+                    || segment.length() <= 8
+                    || segment.endsWith(":")
+                    || segment.endsWith("：")
+                    || CITATION_PATTERN.matcher(segment).find()) {
+                continue;
+            }
+            segments.add(segment);
+        }
+        return segments;
     }
 
     private ServerSentEvent<String> sseEvent(String eventName, Object data) {
@@ -118,5 +221,9 @@ public class StreamingQueryController {
         } catch (JsonProcessingException e) {
             throw new RuntimeException("SSE 序列化失败", e);
         }
+    }
+
+    private Map<String, Object> safeErrorPayload(String message) {
+        return Map.of("message", message, "traceId", TraceIdWebFilter.currentTraceId());
     }
 }

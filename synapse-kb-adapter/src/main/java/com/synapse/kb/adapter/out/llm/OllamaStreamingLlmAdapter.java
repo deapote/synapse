@@ -8,6 +8,8 @@ import dev.langchain4j.model.chat.response.PartialResponseContext;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.chat.response.StreamingHandle;
 import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -45,6 +47,8 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
     }
 
     @Override
+    @CircuitBreaker(name = "ollamaStreaming")
+    @Bulkhead(name = "ollamaStreaming")
     public Stream<String> generateStream(String prompt) {
         BlockingQueue<Object> queue = new LinkedBlockingQueue<>(1000);
         AtomicBoolean cancelled = new AtomicBoolean(false);

@@ -26,6 +26,7 @@ public class GlobalExceptionHandler {
                 .body(Map.of(
                         "error", "BUSINESS_ERROR",
                         "message", e.getMessage(),
+                        "traceId", TraceIdWebFilter.currentTraceId(),
                         "timestamp", Instant.now().toString()
                 ));
     }
@@ -37,6 +38,7 @@ public class GlobalExceptionHandler {
                 .body(Map.of(
                         "error", "INTERNAL_ERROR",
                         "message", "系统内部错误，请联系管理员",
+                        "traceId", TraceIdWebFilter.currentTraceId(),
                         "timestamp", Instant.now().toString()
                 ));
     }

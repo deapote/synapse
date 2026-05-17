@@ -5,6 +5,9 @@ import com.synapse.kb.model.ChatRole;
 import com.synapse.kb.port.out.ChatMemorySummarizerPort;
 import com.synapse.shared.exception.DomainException;
 import dev.langchain4j.model.ollama.OllamaChatModel;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -34,6 +37,9 @@ public class OllamaChatMemorySummarizerAdapter implements ChatMemorySummarizerPo
     }
 
     @Override
+    @CircuitBreaker(name = "ollamaChat")
+    @Retry(name = "ollamaChat")
+    @Bulkhead(name = "ollamaChat")
     public String summarize(String existingSummary, List<ChatMessage> messages, int maxChars) {
         if (messages == null || messages.isEmpty()) {
             return existingSummary == null ? "" : existingSummary.strip();

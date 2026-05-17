@@ -190,4 +190,51 @@ async function handleLogout() {
   color: var(--danger);
   background: var(--danger-subtle);
 }
+
+@media (max-width: 720px) {
+  .sidebar {
+    width: 72px;
+    padding: 18px 10px;
+    align-items: center;
+  }
+
+  .brand {
+    width: 44px;
+    padding: 8px 0 20px;
+    text-align: center;
+    font-size: 18px;
+    letter-spacing: 0;
+  }
+
+  .brand::first-letter {
+    font-size: 20px;
+  }
+
+  .brand {
+    color: transparent;
+    position: relative;
+  }
+
+  .brand::after {
+    content: 'S';
+    position: absolute;
+    inset: 8px 0 auto;
+    color: var(--text-primary);
+  }
+
+  .nav,
+  .footer {
+    width: 100%;
+  }
+
+  .nav-item {
+    justify-content: center;
+    padding: 10px 0;
+  }
+
+  .nav-item span,
+  .user-box {
+    display: none;
+  }
+}
 </style>

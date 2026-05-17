@@ -3,6 +3,9 @@ package com.synapse.kb.adapter.out.llm;
 import com.synapse.kb.port.out.QueryRewritePort;
 import com.synapse.shared.exception.DomainException;
 import dev.langchain4j.model.ollama.OllamaChatModel;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -30,6 +33,9 @@ public class OllamaQueryRewriteAdapter implements QueryRewritePort {
     }
 
     @Override
+    @CircuitBreaker(name = "ollamaChat")
+    @Retry(name = "ollamaChat")
+    @Bulkhead(name = "ollamaChat")
     public String rewrite(String query) {
         try {
             return sanitize(chatModel.chat(String.format(promptTemplate, query)));

@@ -10,6 +10,8 @@ public interface ChunkIndexMongoRepository extends MongoRepository<ChunkIndexDoc
 
     List<ChunkIndexDocument> findByKnowledgeBaseIdAndTokensIn(String knowledgeBaseId, Collection<String> tokens);
 
+    List<ChunkIndexDocument> findByKnowledgeBaseIdAndDocumentId(String knowledgeBaseId, String documentId);
+
     long countByKnowledgeBaseId(String knowledgeBaseId);
 
     void deleteByKnowledgeBaseIdAndDocumentId(String knowledgeBaseId, String documentId);

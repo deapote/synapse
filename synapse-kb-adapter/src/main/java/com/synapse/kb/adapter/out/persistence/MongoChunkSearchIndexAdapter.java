@@ -1,12 +1,19 @@
 package com.synapse.kb.adapter.out.persistence;
 
+import com.synapse.kb.adapter.out.persistence.entity.ChunkCorpusStatsDocument;
 import com.synapse.kb.adapter.out.persistence.entity.ChunkIndexDocument;
+import com.synapse.kb.adapter.out.persistence.entity.ChunkPostingDocument;
 import com.synapse.kb.model.ChunkReference;
 import com.synapse.kb.model.DocumentChunk;
 import com.synapse.kb.model.DocumentId;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.out.ChunkSearchIndexPort;
 import com.synapse.shared.exception.DomainException;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -25,17 +32,43 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     private static final double B = 0.75;
 
     private final ChunkIndexMongoRepository repository;
+    private final MongoTemplate mongoTemplate;
+    private final int maxCandidates;
 
-    public MongoChunkSearchIndexAdapter(ChunkIndexMongoRepository repository) {
+    public MongoChunkSearchIndexAdapter(ChunkIndexMongoRepository repository,
+                                        MongoTemplate mongoTemplate,
+                                        @Value("${synapse.rag.keyword.max-candidates:5000}") int maxCandidates) {
         this.repository = repository;
+        this.mongoTemplate = mongoTemplate;
+        this.maxCandidates = Math.max(100, maxCandidates);
     }
 
     @Override
     public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks) {
         try {
-            repository.saveAll(chunks.stream()
+            deleteByDocumentId(knowledgeBaseId, documentId);
+            List<ChunkIndexDocument> chunkDocuments = chunks.stream()
                     .map(chunk -> toDocument(knowledgeBaseId, documentId, documentName, chunk))
-                    .toList());
+                    .toList();
+            repository.saveAll(chunkDocuments);
+            List<ChunkPostingDocument> postings = new ArrayList<>();
+            long tokenCount = 0;
+            for (ChunkIndexDocument chunk : chunkDocuments) {
+                tokenCount += chunk.getTokenCount();
+                for (Map.Entry<String, Integer> entry : chunk.getTermFrequencies().entrySet()) {
+                    postings.add(toPosting(chunk, entry.getKey(), entry.getValue()));
+                }
+            }
+            if (!postings.isEmpty()) {
+                mongoTemplate.insert(postings, ChunkPostingDocument.class);
+            }
+            mongoTemplate.upsert(
+                    new Query(Criteria.where("_id").is(knowledgeBaseId.value())),
+                    new Update()
+                            .inc("totalChunks", chunkDocuments.size())
+                            .inc("totalTokenCount", tokenCount),
+                    ChunkCorpusStatsDocument.class
+            );
         } catch (Exception e) {
             throw new DomainException("关键词索引写入失败", e);
         }
@@ -50,21 +83,26 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
 
         try {
             List<String> uniqueQueryTokens = new ArrayList<>(new LinkedHashSet<>(queryTokens));
-            List<ChunkIndexDocument> candidates = repository.findByKnowledgeBaseIdAndTokensIn(
-                    knowledgeBaseId.value(), uniqueQueryTokens
+            List<ChunkPostingDocument> postings = mongoTemplate.find(
+                    new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                            .and("token").in(uniqueQueryTokens)).limit(maxCandidates),
+                    ChunkPostingDocument.class
             );
-            if (candidates.isEmpty()) {
+            if (postings.isEmpty()) {
                 return List.of();
             }
 
-            long totalChunks = Math.max(1, repository.countByKnowledgeBaseId(knowledgeBaseId.value()));
-            double avgTokenCount = candidates.stream()
-                    .mapToInt(ChunkIndexDocument::getTokenCount)
-                    .average()
-                    .orElse(1.0);
-            Map<String, Long> documentFrequencies = documentFrequencies(candidates, uniqueQueryTokens);
+            ChunkCorpusStatsDocument stats = mongoTemplate.findById(
+                    knowledgeBaseId.value(), ChunkCorpusStatsDocument.class);
+            long totalChunks = stats == null ? Math.max(1, repository.countByKnowledgeBaseId(knowledgeBaseId.value()))
+                    : Math.max(1, stats.getTotalChunks());
+            double avgTokenCount = stats == null || stats.getTotalChunks() <= 0
+                    ? 1.0
+                    : Math.max(1.0, (double) stats.getTotalTokenCount() / stats.getTotalChunks());
+            Map<String, Long> documentFrequencies = documentFrequencies(knowledgeBaseId, uniqueQueryTokens);
+            Map<String, PostingCandidate> candidates = mergePostings(postings);
 
-            List<ScoredChunk> scored = candidates.stream()
+            List<ScoredChunk> scored = candidates.values().stream()
                     .map(candidate -> new ScoredChunk(candidate, bm25(candidate, uniqueQueryTokens,
                             documentFrequencies, totalChunks, avgTokenCount)))
                     .filter(chunk -> chunk.score > 0)
@@ -84,7 +122,21 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     @Override
     public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) {
         try {
+            List<ChunkIndexDocument> chunks = repository.findByKnowledgeBaseIdAndDocumentId(
+                    knowledgeBaseId.value(), documentId.value());
+            long tokenCount = chunks.stream().mapToInt(ChunkIndexDocument::getTokenCount).sum();
             repository.deleteByKnowledgeBaseIdAndDocumentId(knowledgeBaseId.value(), documentId.value());
+            mongoTemplate.remove(new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                    .and("documentId").is(documentId.value())), ChunkPostingDocument.class);
+            if (!chunks.isEmpty()) {
+                mongoTemplate.updateFirst(
+                        new Query(Criteria.where("_id").is(knowledgeBaseId.value())),
+                        new Update()
+                                .inc("totalChunks", -chunks.size())
+                                .inc("totalTokenCount", -tokenCount),
+                        ChunkCorpusStatsDocument.class
+                );
+            }
         } catch (Exception e) {
             throw new DomainException("关键词索引删除失败", e);
         }
@@ -110,23 +162,32 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
         return document;
     }
 
-    private Map<String, Long> documentFrequencies(List<ChunkIndexDocument> candidates, List<String> queryTokens) {
+    private Map<String, Long> documentFrequencies(KnowledgeBaseId knowledgeBaseId, List<String> queryTokens) {
         Map<String, Long> frequencies = new HashMap<>();
         for (String token : queryTokens) {
-            long count = candidates.stream()
-                    .filter(candidate -> candidate.getTermFrequencies().containsKey(token))
-                    .count();
+            long count = mongoTemplate.count(new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                    .and("token").is(token)), ChunkPostingDocument.class);
             frequencies.put(token, Math.max(1, count));
         }
         return frequencies;
     }
 
-    private double bm25(ChunkIndexDocument document, List<String> queryTokens,
+    private Map<String, PostingCandidate> mergePostings(List<ChunkPostingDocument> postings) {
+        Map<String, PostingCandidate> candidates = new HashMap<>();
+        for (ChunkPostingDocument posting : postings) {
+            String key = posting.getDocumentId() + ":" + posting.getChunkIndex();
+            PostingCandidate candidate = candidates.computeIfAbsent(key, ignored -> new PostingCandidate(posting));
+            candidate.termFrequencies.put(posting.getToken(), posting.getTf());
+        }
+        return candidates;
+    }
+
+    private double bm25(PostingCandidate document, List<String> queryTokens,
                         Map<String, Long> documentFrequencies, long totalChunks, double avgTokenCount) {
         double score = 0;
-        int documentLength = Math.max(1, document.getTokenCount());
+        int documentLength = Math.max(1, document.tokenCount);
         for (String token : queryTokens) {
-            int tf = document.getTermFrequencies().getOrDefault(token, 0);
+            int tf = document.termFrequencies.getOrDefault(token, 0);
             if (tf <= 0) {
                 continue;
             }
@@ -145,16 +206,32 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
         return (float) Math.max(0, Math.min(1, score / maxScore));
     }
 
-    private ChunkReference toReference(ChunkIndexDocument document, float score) {
+    private ChunkReference toReference(PostingCandidate document, float score) {
         return new ChunkReference(
-                document.getDocumentId(),
-                document.getDocumentName(),
-                document.getChunkIndex(),
-                document.getChunkText(),
+                document.documentId,
+                document.documentName,
+                document.chunkIndex,
+                document.chunkText,
                 score,
-                document.getStartPosition(),
-                document.getEndPosition()
+                document.startPosition,
+                document.endPosition
         );
+    }
+
+    private ChunkPostingDocument toPosting(ChunkIndexDocument chunk, String token, int tf) {
+        ChunkPostingDocument posting = new ChunkPostingDocument();
+        posting.setId(chunk.getKnowledgeBaseId() + ":" + token + ":" + chunk.getDocumentId() + ":" + chunk.getChunkIndex());
+        posting.setKnowledgeBaseId(chunk.getKnowledgeBaseId());
+        posting.setToken(token);
+        posting.setDocumentId(chunk.getDocumentId());
+        posting.setDocumentName(chunk.getDocumentName());
+        posting.setChunkIndex(chunk.getChunkIndex());
+        posting.setChunkText(chunk.getChunkText());
+        posting.setStartPosition(chunk.getStartPosition());
+        posting.setEndPosition(chunk.getEndPosition());
+        posting.setTf(tf);
+        posting.setTokenCount(chunk.getTokenCount());
+        return posting;
     }
 
     private Map<String, Integer> termFrequencies(List<String> tokens) {
@@ -222,6 +299,27 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
                 || script == Character.UnicodeScript.HANGUL;
     }
 
-    private record ScoredChunk(ChunkIndexDocument document, double score) {
+    private record ScoredChunk(PostingCandidate document, double score) {
+    }
+
+    private static class PostingCandidate {
+        private final String documentId;
+        private final String documentName;
+        private final int chunkIndex;
+        private final String chunkText;
+        private final int startPosition;
+        private final int endPosition;
+        private final int tokenCount;
+        private final Map<String, Integer> termFrequencies = new HashMap<>();
+
+        private PostingCandidate(ChunkPostingDocument posting) {
+            this.documentId = posting.getDocumentId();
+            this.documentName = posting.getDocumentName();
+            this.chunkIndex = posting.getChunkIndex();
+            this.chunkText = posting.getChunkText();
+            this.startPosition = posting.getStartPosition();
+            this.endPosition = posting.getEndPosition();
+            this.tokenCount = posting.getTokenCount();
+        }
     }
 }

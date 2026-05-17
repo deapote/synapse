@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -32,6 +34,8 @@ public class KnowledgeBaseApplicationService implements
         IngestDocumentUseCase,
         ListDocumentUseCase,
         DeleteDocumentUseCase,
+        RetryDocumentIngestionUseCase,
+        ProcessIngestionJobUseCase,
         QueryKnowledgeBaseUseCase,
         GetCurrentChatSessionUseCase,
         CreateChatSessionUseCase,
@@ -46,13 +50,14 @@ public class KnowledgeBaseApplicationService implements
     private final ChatMessageRepository chatMessageRepository;
     private final DocumentParserPort documentParserPort;
     private final RecursiveChunkingStrategy recursiveChunkingStrategy;
+    private final DocumentContentStorePort documentContentStorePort;
+    private final IngestionJobRepository ingestionJobRepository;
     private final EmbeddingPort embeddingPort;
     private final VectorStorePort vectorStorePort;
     private final ChunkSearchIndexPort chunkSearchIndexPort;
     private final QueryRewritePort queryRewritePort;
     private final ChatMemorySummarizerPort chatMemorySummarizerPort;
     private final AccessControlPort accessControlPort;
-    private final Executor ingestionExecutor;
     private final Executor retrievalExecutor;
 
     /** 模板必须包含两个 {@code %s} 占位符：检索上下文、用户问题。 */
@@ -68,6 +73,8 @@ public class KnowledgeBaseApplicationService implements
     private final int recentMessageLimit;
     private final int summaryTriggerMessageCount;
     private final int maxSummaryChars;
+    private final int ingestionMaxAttempts;
+    private final Duration ingestionLeaseDuration;
 
     public KnowledgeBaseApplicationService(
             KnowledgeBaseRepository knowledgeBaseRepository,
@@ -76,13 +83,14 @@ public class KnowledgeBaseApplicationService implements
             ChatMessageRepository chatMessageRepository,
             DocumentParserPort documentParserPort,
             RecursiveChunkingStrategy recursiveChunkingStrategy,
+            DocumentContentStorePort documentContentStorePort,
+            IngestionJobRepository ingestionJobRepository,
             EmbeddingPort embeddingPort,
             VectorStorePort vectorStorePort,
             ChunkSearchIndexPort chunkSearchIndexPort,
             QueryRewritePort queryRewritePort,
             ChatMemorySummarizerPort chatMemorySummarizerPort,
             AccessControlPort accessControlPort,
-            Executor ingestionExecutor,
             Executor retrievalExecutor,
             String promptTemplate,
             int topK,
@@ -95,7 +103,9 @@ public class KnowledgeBaseApplicationService implements
             boolean chatMemoryEnabled,
             int recentMessageLimit,
             int summaryTriggerMessageCount,
-            int maxSummaryChars
+            int maxSummaryChars,
+            int ingestionMaxAttempts,
+            Duration ingestionLeaseDuration
     ) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.documentRepository = documentRepository;
@@ -103,13 +113,14 @@ public class KnowledgeBaseApplicationService implements
         this.chatMessageRepository = chatMessageRepository;
         this.documentParserPort = documentParserPort;
         this.recursiveChunkingStrategy = recursiveChunkingStrategy;
+        this.documentContentStorePort = documentContentStorePort;
+        this.ingestionJobRepository = ingestionJobRepository;
         this.embeddingPort = embeddingPort;
         this.vectorStorePort = vectorStorePort;
         this.chunkSearchIndexPort = chunkSearchIndexPort;
         this.queryRewritePort = queryRewritePort;
         this.chatMemorySummarizerPort = chatMemorySummarizerPort;
         this.accessControlPort = accessControlPort;
-        this.ingestionExecutor = ingestionExecutor;
         this.retrievalExecutor = retrievalExecutor;
         this.promptTemplate = promptTemplate;
         this.topK = Math.max(1, Math.min(topK, 20));
@@ -130,6 +141,8 @@ public class KnowledgeBaseApplicationService implements
         this.recentMessageLimit = Math.max(0, Math.min(recentMessageLimit, 50));
         this.summaryTriggerMessageCount = Math.max(1, summaryTriggerMessageCount);
         this.maxSummaryChars = Math.max(200, maxSummaryChars);
+        this.ingestionMaxAttempts = Math.max(1, ingestionMaxAttempts);
+        this.ingestionLeaseDuration = ingestionLeaseDuration == null ? Duration.ofMinutes(5) : ingestionLeaseDuration;
     }
 
     @Override
@@ -159,8 +172,11 @@ public class KnowledgeBaseApplicationService implements
         for (Document doc : documents) {
             vectorStorePort.deleteByDocumentId(id, doc.getId());
             chunkSearchIndexPort.deleteByDocumentId(id, doc.getId());
+            deleteContentObjectQuietly(doc);
+            ingestionJobRepository.deleteByDocumentId(doc.getId());
             documentRepository.deleteById(doc.getId());
         }
+        ingestionJobRepository.deleteByKnowledgeBaseId(id);
         knowledgeBaseRepository.deleteById(id);
     }
 
@@ -172,6 +188,8 @@ public class KnowledgeBaseApplicationService implements
         accessControlPort.checkKnowledgeBaseAccess(kb, "KB_DELETE");
         vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), id);
         chunkSearchIndexPort.deleteByDocumentId(document.getKnowledgeBaseId(), id);
+        deleteContentObjectQuietly(document);
+        ingestionJobRepository.deleteByDocumentId(id);
         documentRepository.deleteById(id);
     }
 
@@ -206,6 +224,8 @@ public class KnowledgeBaseApplicationService implements
             if (existing.getStatus() == DocumentStatus.FAILED) {
                 vectorStorePort.deleteByDocumentId(existing.getKnowledgeBaseId(), existing.getId());
                 chunkSearchIndexPort.deleteByDocumentId(existing.getKnowledgeBaseId(), existing.getId());
+                deleteContentObjectQuietly(existing);
+                ingestionJobRepository.deleteByDocumentId(existing.getId());
                 documentRepository.deleteById(existing.getId());
             }
         }
@@ -218,35 +238,116 @@ public class KnowledgeBaseApplicationService implements
                 command.contentHash()
         );
 
-        document = documentRepository.save(document);
-
-        Document processingDocument = document;
-        ingestionExecutor.execute(() -> runIngestionTask(processingDocument, command.content()));
+        String contentObjectId = documentContentStorePort.store(
+                command.knowledgeBaseId(),
+                document.getId(),
+                document.getFileName(),
+                document.getFileType(),
+                command.content()
+        );
+        document.attachContentObject(contentObjectId);
+        try {
+            document = documentRepository.save(document);
+        } catch (RuntimeException e) {
+            documentContentStorePort.delete(contentObjectId);
+            throw e;
+        }
+        ingestionJobRepository.save(IngestionJob.create(document.getId(), document.getKnowledgeBaseId(), contentObjectId));
 
         return document.getId();
     }
 
-    private void runIngestionTask(Document document, InputStream content) {
+    @Override
+    public Document retry(DocumentId id) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+        if (document.getStatus() != DocumentStatus.FAILED) {
+            throw new DomainException("仅失败文档支持重试");
+        }
+        if (document.getContentObjectId() == null || document.getContentObjectId().isBlank()) {
+            throw new DomainException("文档原始内容不存在，无法重试");
+        }
+        vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
+        chunkSearchIndexPort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
+        ingestionJobRepository.deleteByDocumentId(document.getId());
+        document.retry();
+        document = documentRepository.save(document);
+        ingestionJobRepository.save(IngestionJob.create(document.getId(), document.getKnowledgeBaseId(), document.getContentObjectId()));
+        return document;
+    }
+
+    @Override
+    public boolean processNextAvailable(String workerId) {
+        IngestionJob job = ingestionJobRepository.claimNext(workerId, ingestionLeaseDuration).orElse(null);
+        if (job == null) {
+            return false;
+        }
+        runIngestionTask(job);
+        return true;
+    }
+
+    private void runIngestionTask(IngestionJob job) {
+        Document document = documentRepository.findById(job.getDocumentId()).orElse(null);
+        if (document == null) {
+            job.markFailed("文档不存在");
+            ingestionJobRepository.save(job);
+            return;
+        }
         try {
-            processDocument(document, content);
+            processDocument(document, job.getContentObjectId());
+            job.markSucceeded();
+            ingestionJobRepository.save(job);
+            documentContentStorePort.delete(job.getContentObjectId());
             log.info("文档摄入完成 documentId={} knowledgeBaseId={} chunks={}",
                     document.getId().value(), document.getKnowledgeBaseId().value(), document.getChunkCount());
         } catch (DomainException e) {
+            handleIngestionFailure(job, document, e);
             log.warn("文档摄入失败 documentId={} knowledgeBaseId={} reason={}",
                     document.getId().value(), document.getKnowledgeBaseId().value(), e.getMessage());
         } catch (Exception e) {
+            handleIngestionFailure(job, document, e);
             log.error("文档摄入出现未预期异常 documentId={} knowledgeBaseId={}",
                     document.getId().value(), document.getKnowledgeBaseId().value(), e);
         }
     }
 
-    private void processDocument(Document document, InputStream content) {
-        try {
-            document.transitionTo(DocumentStatus.PROCESSING);
+    private void handleIngestionFailure(IngestionJob job, Document document, Exception e) {
+        String reason = safeFailureReason(e);
+        if (job.getAttempts() >= ingestionMaxAttempts) {
+            tryTransitionToFailed(document, reason);
             documentRepository.save(document);
+            job.markFailed(reason);
+        } else {
+            job.markRetrying(reason, Instant.now().plus(backoffForAttempt(job.getAttempts())));
+        }
+        ingestionJobRepository.save(job);
+    }
+
+    private Duration backoffForAttempt(int attempt) {
+        return attempt <= 1 ? Duration.ofSeconds(30) : Duration.ofMinutes(2);
+    }
+
+    private void tryTransitionToFailed(Document document, String reason) {
+        if (document.getStatus() == DocumentStatus.PROCESSING) {
+            document.transitionTo(DocumentStatus.FAILED, reason);
+        } else if (document.getStatus() == DocumentStatus.PENDING) {
+            document.transitionTo(DocumentStatus.PROCESSING);
+            document.transitionTo(DocumentStatus.FAILED, reason);
+        }
+    }
+
+    private void processDocument(Document document, String contentObjectId) {
+        try {
+            if (document.getStatus() == DocumentStatus.PENDING) {
+                document.transitionTo(DocumentStatus.PROCESSING);
+                documentRepository.save(document);
+            }
             log.info("文档摄入开始 documentId={} knowledgeBaseId={}",
                     document.getId().value(), document.getKnowledgeBaseId().value());
 
+            InputStream content = documentContentStorePort.open(contentObjectId);
             String text = documentParserPort.parse(content, document.getFileName());
             log.info("文档解析完成 documentId={} chars={}", document.getId().value(), text.length());
 
@@ -292,10 +393,20 @@ public class KnowledgeBaseApplicationService implements
             } catch (Exception ignored) {
                 // 保留主异常；失败文档重新上传时会再次清理残留索引。
             }
-            document.transitionTo(DocumentStatus.FAILED, safeFailureReason(e));
             throw new DomainException("文档处理失败: " + safeFailureReason(e), e);
         } finally {
             documentRepository.save(document);
+        }
+    }
+
+    private void deleteContentObjectQuietly(Document document) {
+        if (document.getContentObjectId() == null || document.getContentObjectId().isBlank()) {
+            return;
+        }
+        try {
+            documentContentStorePort.delete(document.getContentObjectId());
+        } catch (Exception ignored) {
+            // 删除文档时不因原始对象清理失败中断主流程；摄入残留可由运维脚本清理。
         }
     }
 
@@ -330,8 +441,14 @@ public class KnowledgeBaseApplicationService implements
         for (int i = 0; i < results.size(); i++) {
             ChunkReference result = results.get(i);
 
-            contextBuilder.append("<reference index=\"").append(i + 1).append("\">\n")
-                    .append(result.chunkText()).append("\n</reference>\n\n");
+            contextBuilder.append("<source id=\"").append(i + 1).append("\">\n")
+                    .append("<documentName>").append(escapeSourceMetadata(result.documentName())).append("</documentName>\n")
+                    .append("<chunkIndex>").append(result.chunkIndex()).append("</chunkIndex>\n")
+                    .append("<score>").append(String.format(java.util.Locale.ROOT, "%.4f", result.score())).append("</score>\n")
+                    .append("<chunkText>\n")
+                    .append(result.chunkText())
+                    .append("\n</chunkText>\n")
+                    .append("</source>\n\n");
 
             references.add(result);
         }
@@ -542,6 +659,15 @@ public class KnowledgeBaseApplicationService implements
 
     private String referenceKey(ChunkReference reference) {
         return reference.documentId() + ":" + reference.chunkIndex();
+    }
+
+    private String escapeSourceMetadata(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
     private List<ChunkReference> await(CompletableFuture<List<ChunkReference>> future) {

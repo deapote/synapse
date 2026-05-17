@@ -3,6 +3,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBase'
 import { useChatStore } from '@/stores/chat'
+import type { ChatMessage, ChunkReference } from '@/types'
 import {
   Send,
   Square,
@@ -97,8 +98,29 @@ function selectKb(kb: typeof kbStore.list[0]) {
   router.push(`/knowledge-bases/${kb.id}/chat`)
 }
 
-function formatReferenceNumber(index: number): string {
-  return String(index + 1)
+function referenceNumber(ref: ChunkReference, index: number): string {
+  return String(ref.sourceId || index + 1)
+}
+
+function visibleReferences(msg: ChatMessage): ChunkReference[] {
+  const references = msg.references || []
+  const usedReferences = references.filter((ref) => ref.used)
+  return usedReferences.length > 0 ? usedReferences : references
+}
+
+function hiddenCandidateCount(msg: ChatMessage): number {
+  const references = msg.references || []
+  const visibleSourceIds = new Set(visibleReferences(msg).map((ref) => ref.sourceId))
+  return references.filter((ref) => !visibleSourceIds.has(ref.sourceId)).length
+}
+
+function validationWarning(msg: ChatMessage): string {
+  if (!msg.validation || msg.validation.trusted) {
+    return ''
+  }
+  return msg.validation.warnings.length > 0
+    ? msg.validation.warnings.join('；')
+    : '引用校验未通过，答案可能包含未由知识库支持的内容'
 }
 </script>
 
@@ -162,6 +184,10 @@ function formatReferenceNumber(index: number): string {
           <div class="message-content">
             <div class="message-text">{{ msg.content }}</div>
 
+            <div v-if="validationWarning(msg)" class="validation-warning">
+              {{ validationWarning(msg) }}
+            </div>
+
             <!-- Thinking indicator: shown when assistant message is empty (before first token arrives) -->
             <div v-if="msg.role === 'assistant' && !msg.content" class="thinking-hint">
               <span class="thinking-dot" />
@@ -172,14 +198,19 @@ function formatReferenceNumber(index: number): string {
 
             <!-- References -->
             <div v-if="msg.references && msg.references.length > 0" class="references">
+              <div v-if="hiddenCandidateCount(msg) > 0" class="reference-note">
+                已隐藏 {{ hiddenCandidateCount(msg) }} 个未被答案引用的检索候选
+              </div>
               <div
-                v-for="(ref, idx) in msg.references"
-                :key="idx"
+                v-for="(ref, idx) in visibleReferences(msg)"
+                :key="`${ref.sourceId}-${ref.documentId}-${ref.startPosition}`"
                 class="reference-card"
+                :class="{ used: ref.used, candidate: ref.used === false }"
               >
                 <div class="reference-header">
-                  <span class="reference-num">{{ formatReferenceNumber(idx) }}</span>
+                  <span class="reference-num">{{ referenceNumber(ref, idx) }}</span>
                   <span class="reference-doc">{{ ref.documentName }}</span>
+                  <span v-if="ref.used" class="reference-used">已引用</span>
                   <span class="reference-score">相关度 {{ ref.score.toFixed(2) }}</span>
                 </div>
                 <div class="reference-text">{{ ref.chunkText }}</div>
@@ -462,6 +493,17 @@ function formatReferenceNumber(index: number): string {
   display: inline-block;
 }
 
+.validation-warning {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid #fed7aa;
+}
+
 /* References */
 .references {
   margin-top: 16px;
@@ -470,11 +512,26 @@ function formatReferenceNumber(index: number): string {
   gap: 8px;
 }
 
+.reference-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 .reference-card {
   padding: 12px 16px;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
   border-left: 3px solid var(--accent);
+}
+
+.reference-card.candidate {
+  border-left-color: var(--border-color);
+  opacity: 0.74;
+}
+
+.reference-card.used {
+  background: #f8fafc;
 }
 
 .reference-header {
@@ -502,6 +559,15 @@ function formatReferenceNumber(index: number): string {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-primary);
+}
+
+.reference-used {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-radius: 999px;
+  padding: 2px 6px;
+  flex-shrink: 0;
 }
 
 .reference-score {
