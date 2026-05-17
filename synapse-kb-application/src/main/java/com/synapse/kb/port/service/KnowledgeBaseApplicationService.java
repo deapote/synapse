@@ -252,7 +252,13 @@ public class KnowledgeBaseApplicationService implements
             documentContentStorePort.delete(contentObjectId);
             throw e;
         }
-        ingestionJobRepository.save(IngestionJob.create(document.getId(), document.getKnowledgeBaseId(), contentObjectId));
+        try {
+            ingestionJobRepository.save(IngestionJob.create(document.getId(), document.getKnowledgeBaseId(), contentObjectId));
+        } catch (RuntimeException e) {
+            documentRepository.deleteById(document.getId());
+            documentContentStorePort.delete(contentObjectId);
+            throw e;
+        }
 
         return document.getId();
     }
@@ -347,55 +353,67 @@ public class KnowledgeBaseApplicationService implements
             log.info("文档摄入开始 documentId={} knowledgeBaseId={}",
                     document.getId().value(), document.getKnowledgeBaseId().value());
 
-            InputStream content = documentContentStorePort.open(contentObjectId);
-            String text = documentParserPort.parse(content, document.getFileName());
-            log.info("文档解析完成 documentId={} chars={}", document.getId().value(), text.length());
-
-            List<DocumentChunk> chunks = recursiveChunkingStrategy.split(text);
-            if (chunks.isEmpty()) {
-                throw new DomainException("文档未解析出有效文本");
-            }
-            log.info("文档分块完成 documentId={} chunks={}", document.getId().value(), chunks.size());
-
-            List<float[]> embeddings = embeddingPort.embed(
-                    chunks.stream().map(DocumentChunk::text).toList()
-            );
-            log.info("文档向量化完成 documentId={} embeddings={}", document.getId().value(), embeddings.size());
-
-            vectorStorePort.store(
-                    document.getKnowledgeBaseId(),
-                    document.getId(),
-                    document.getFileName(),
-                    chunks,
-                    embeddings
-            );
-            log.info("文档向量写入完成 documentId={}", document.getId().value());
-
-            chunkSearchIndexPort.store(
-                    document.getKnowledgeBaseId(),
-                    document.getId(),
-                    document.getFileName(),
-                    chunks
-            );
-            log.info("文档关键词索引写入完成 documentId={}", document.getId().value());
+            List<DocumentChunk> chunks = parseDocumentChunks(document, contentObjectId);
+            storeDocumentIndexes(document, chunks);
 
             document.setChunkCount(chunks.size());
             document.transitionTo(DocumentStatus.COMPLETED);
 
         } catch (Exception e) {
-            try {
-                vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
-            } catch (Exception ignored) {
-                // 保留主异常；失败文档重新上传时会再次清理残留向量。
-            }
-            try {
-                chunkSearchIndexPort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
-            } catch (Exception ignored) {
-                // 保留主异常；失败文档重新上传时会再次清理残留索引。
-            }
+            cleanupDocumentIndexesQuietly(document);
             throw new DomainException("文档处理失败: " + safeFailureReason(e), e);
         } finally {
             documentRepository.save(document);
+        }
+    }
+
+    private List<DocumentChunk> parseDocumentChunks(Document document, String contentObjectId) {
+        InputStream content = documentContentStorePort.open(contentObjectId);
+        String text = documentParserPort.parse(content, document.getFileName());
+        log.info("文档解析完成 documentId={} chars={}", document.getId().value(), text.length());
+
+        List<DocumentChunk> chunks = recursiveChunkingStrategy.split(text);
+        if (chunks.isEmpty()) {
+            throw new DomainException("文档未解析出有效文本");
+        }
+        log.info("文档分块完成 documentId={} chunks={}", document.getId().value(), chunks.size());
+        return chunks;
+    }
+
+    private void storeDocumentIndexes(Document document, List<DocumentChunk> chunks) {
+        List<float[]> embeddings = embeddingPort.embed(
+                chunks.stream().map(DocumentChunk::text).toList()
+        );
+        log.info("文档向量化完成 documentId={} embeddings={}", document.getId().value(), embeddings.size());
+
+        vectorStorePort.store(
+                document.getKnowledgeBaseId(),
+                document.getId(),
+                document.getFileName(),
+                chunks,
+                embeddings
+        );
+        log.info("文档向量写入完成 documentId={}", document.getId().value());
+
+        chunkSearchIndexPort.store(
+                document.getKnowledgeBaseId(),
+                document.getId(),
+                document.getFileName(),
+                chunks
+        );
+        log.info("文档关键词索引写入完成 documentId={}", document.getId().value());
+    }
+
+    private void cleanupDocumentIndexesQuietly(Document document) {
+        try {
+            vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
+        } catch (Exception ignored) {
+            // 保留主异常；失败文档重新上传时会再次清理残留向量。
+        }
+        try {
+            chunkSearchIndexPort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
+        } catch (Exception ignored) {
+            // 保留主异常；失败文档重新上传时会再次清理残留索引。
         }
     }
 
@@ -423,35 +441,10 @@ public class KnowledgeBaseApplicationService implements
         }
         PreparedQuery preparedQuery = prepareQuery(query.text());
 
-        CompletableFuture<List<ChunkReference>> vectorFuture = CompletableFuture.supplyAsync(
-                () -> vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK),
-                retrievalExecutor
-        );
-        CompletableFuture<List<ChunkReference>> keywordFuture = CompletableFuture.supplyAsync(
-                () -> chunkSearchIndexPort.search(query.knowledgeBaseId(), preparedQuery.effectiveText(), keywordCandidateK),
-                retrievalExecutor
-        );
-
-        List<ChunkReference> results = mergeAndRerank(await(vectorFuture), await(keywordFuture));
-
+        List<ChunkReference> results = retrieveReferences(query, preparedQuery);
         StringBuilder contextBuilder = new StringBuilder();
         appendMemoryContext(contextBuilder, chatSession);
-        List<ChunkReference> references = new ArrayList<>();
-
-        for (int i = 0; i < results.size(); i++) {
-            ChunkReference result = results.get(i);
-
-            contextBuilder.append("<source id=\"").append(i + 1).append("\">\n")
-                    .append("<documentName>").append(escapeSourceMetadata(result.documentName())).append("</documentName>\n")
-                    .append("<chunkIndex>").append(result.chunkIndex()).append("</chunkIndex>\n")
-                    .append("<score>").append(String.format(java.util.Locale.ROOT, "%.4f", result.score())).append("</score>\n")
-                    .append("<chunkText>\n")
-                    .append(result.chunkText())
-                    .append("\n</chunkText>\n")
-                    .append("</source>\n\n");
-
-            references.add(result);
-        }
+        appendSourceContexts(contextBuilder, results);
 
         String prompt = String.format(promptTemplate,
                 contextBuilder.toString(),
@@ -460,10 +453,36 @@ public class KnowledgeBaseApplicationService implements
 
         return new RagContext(
                 prompt,
-                references,
+                new ArrayList<>(results),
                 chatSession == null ? null : chatSession.getId().value(),
                 chatSession == null ? null : chatSession.getOwnerUserId()
         );
+    }
+
+    private List<ChunkReference> retrieveReferences(Query query, PreparedQuery preparedQuery) {
+        CompletableFuture<List<ChunkReference>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK),
+                retrievalExecutor
+        );
+        CompletableFuture<List<ChunkReference>> keywordFuture = CompletableFuture.supplyAsync(
+                () -> chunkSearchIndexPort.search(query.knowledgeBaseId(), preparedQuery.effectiveText(), keywordCandidateK),
+                retrievalExecutor
+        );
+        return mergeAndRerank(await(vectorFuture), await(keywordFuture));
+    }
+
+    private void appendSourceContexts(StringBuilder contextBuilder, List<ChunkReference> results) {
+        for (int i = 0; i < results.size(); i++) {
+            ChunkReference result = results.get(i);
+            contextBuilder.append("<source id=\"").append(i + 1).append("\">\n")
+                    .append("<documentName>").append(escapeSourceMetadata(result.documentName())).append("</documentName>\n")
+                    .append("<chunkIndex>").append(result.chunkIndex()).append("</chunkIndex>\n")
+                    .append("<score>").append(String.format(java.util.Locale.ROOT, "%.4f", result.score())).append("</score>\n")
+                    .append("<chunkText>\n")
+                    .append(result.chunkText())
+                    .append("\n</chunkText>\n")
+                    .append("</source>\n\n");
+        }
     }
 
     @Override
@@ -533,7 +552,9 @@ public class KnowledgeBaseApplicationService implements
     }
 
     private void appendMessage(ChatSession session, ChatRole role, String content, List<ChunkReference> references) {
-        ChatMessage message = ChatMessage.create(session, role, content, references);
+        long sequence = chatSessionRepository.nextMessageSequence(session.getId());
+        session.recordMessageSequence(sequence);
+        ChatMessage message = ChatMessage.createWithSequence(session, role, content, references, sequence);
         chatMessageRepository.save(message);
     }
 

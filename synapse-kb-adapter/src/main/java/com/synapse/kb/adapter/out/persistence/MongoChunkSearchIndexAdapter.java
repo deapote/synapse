@@ -23,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** MongoDB 轻量 BM25 分块检索索引。 */
 @Component
@@ -34,13 +35,17 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     private final ChunkIndexMongoRepository repository;
     private final MongoTemplate mongoTemplate;
     private final int maxCandidates;
+    private final long documentFrequencyCacheTtlMillis;
+    private final Map<DocumentFrequencyCacheKey, CachedLong> documentFrequencyCache = new ConcurrentHashMap<>();
 
     public MongoChunkSearchIndexAdapter(ChunkIndexMongoRepository repository,
                                         MongoTemplate mongoTemplate,
-                                        @Value("${synapse.rag.keyword.max-candidates:5000}") int maxCandidates) {
+                                        @Value("${synapse.rag.keyword.max-candidates:5000}") int maxCandidates,
+                                        @Value("${synapse.rag.keyword.document-frequency-cache-ttl-seconds:300}") long documentFrequencyCacheTtlSeconds) {
         this.repository = repository;
         this.mongoTemplate = mongoTemplate;
         this.maxCandidates = Math.max(100, maxCandidates);
+        this.documentFrequencyCacheTtlMillis = Math.max(10, documentFrequencyCacheTtlSeconds) * 1000L;
     }
 
     @Override
@@ -69,6 +74,7 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
                             .inc("totalTokenCount", tokenCount),
                     ChunkCorpusStatsDocument.class
             );
+            invalidateDocumentFrequencyCache(knowledgeBaseId);
         } catch (Exception e) {
             throw new DomainException("关键词索引写入失败", e);
         }
@@ -136,6 +142,7 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
                                 .inc("totalTokenCount", -tokenCount),
                         ChunkCorpusStatsDocument.class
                 );
+                invalidateDocumentFrequencyCache(knowledgeBaseId);
             }
         } catch (Exception e) {
             throw new DomainException("关键词索引删除失败", e);
@@ -165,11 +172,28 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     private Map<String, Long> documentFrequencies(KnowledgeBaseId knowledgeBaseId, List<String> queryTokens) {
         Map<String, Long> frequencies = new HashMap<>();
         for (String token : queryTokens) {
-            long count = mongoTemplate.count(new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
-                    .and("token").is(token)), ChunkPostingDocument.class);
+            long count = cachedDocumentFrequency(knowledgeBaseId, token);
             frequencies.put(token, Math.max(1, count));
         }
         return frequencies;
+    }
+
+    private long cachedDocumentFrequency(KnowledgeBaseId knowledgeBaseId, String token) {
+        long now = System.currentTimeMillis();
+        DocumentFrequencyCacheKey key = new DocumentFrequencyCacheKey(knowledgeBaseId.value(), token);
+        CachedLong cached = documentFrequencyCache.get(key);
+        if (cached != null && cached.expiresAtMillis > now) {
+            return cached.value;
+        }
+        long count = mongoTemplate.count(new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                .and("token").is(token)), ChunkPostingDocument.class);
+        documentFrequencyCache.put(key, new CachedLong(count, now + documentFrequencyCacheTtlMillis));
+        return count;
+    }
+
+    private void invalidateDocumentFrequencyCache(KnowledgeBaseId knowledgeBaseId) {
+        String id = knowledgeBaseId.value();
+        documentFrequencyCache.keySet().removeIf(key -> key.knowledgeBaseId().equals(id));
     }
 
     private Map<String, PostingCandidate> mergePostings(List<ChunkPostingDocument> postings) {
@@ -300,6 +324,12 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     }
 
     private record ScoredChunk(PostingCandidate document, double score) {
+    }
+
+    private record DocumentFrequencyCacheKey(String knowledgeBaseId, String token) {
+    }
+
+    private record CachedLong(long value, long expiresAtMillis) {
     }
 
     private static class PostingCandidate {

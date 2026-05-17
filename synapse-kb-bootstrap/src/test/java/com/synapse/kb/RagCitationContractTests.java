@@ -97,6 +97,7 @@ class RagCitationContractTests {
 
     private static class EmptyChatSessionRepository implements ChatSessionRepository {
         @Override public ChatSession save(ChatSession session) { return session; }
+        @Override public long nextMessageSequence(ChatSessionId id) { return 1; }
         @Override public Optional<ChatSession> findById(ChatSessionId id) { return Optional.empty(); }
         @Override public Optional<ChatSession> findLatestByOwnerUserIdAndKnowledgeBaseId(String ownerUserId, KnowledgeBaseId knowledgeBaseId) { return Optional.empty(); }
     }

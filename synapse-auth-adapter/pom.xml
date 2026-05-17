@@ -20,10 +20,6 @@
             <artifactId>synapse-auth-application</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.synapse</groupId>
-            <artifactId>synapse-kb-application</artifactId>
-        </dependency>
-        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>

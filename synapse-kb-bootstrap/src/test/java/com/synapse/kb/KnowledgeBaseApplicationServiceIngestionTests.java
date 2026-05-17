@@ -38,6 +38,39 @@ class KnowledgeBaseApplicationServiceIngestionTests {
     }
 
     @Test
+    void ingestRollsBackDocumentAndContentWhenQueueingJobFails() {
+        Fixture fixture = new Fixture();
+        fixture.jobs.failOnSave = true;
+
+        assertThrows(RuntimeException.class, () -> fixture.service.ingest(new IngestDocumentUseCase.IngestDocumentCommand(
+                fixture.kb.getId(), "a.txt", "text/plain", 3, "hash",
+                new ByteArrayInputStream("abc".getBytes())
+        )));
+
+        assertTrue(fixture.documents.docs.isEmpty());
+        assertTrue(fixture.contentStore.stored.isEmpty());
+    }
+
+    @Test
+    void processNextAvailableCompletesQueuedDocument() {
+        Fixture fixture = new Fixture();
+        DocumentId id = fixture.service.ingest(new IngestDocumentUseCase.IngestDocumentCommand(
+                fixture.kb.getId(), "a.txt", "text/plain", 11, "hash",
+                new ByteArrayInputStream("hello world".getBytes())
+        ));
+
+        assertTrue(fixture.service.processNextAvailable("worker-1"));
+
+        Document document = fixture.documents.findById(id).orElseThrow();
+        assertEquals(DocumentStatus.COMPLETED, document.getStatus());
+        assertEquals(1, document.getChunkCount());
+        assertEquals(1, fixture.vectorStores);
+        assertEquals(1, fixture.keywordStores);
+        assertEquals(IngestionJobStatus.SUCCEEDED, fixture.jobs.jobs.getFirst().getStatus());
+        assertTrue(fixture.contentStore.stored.isEmpty());
+    }
+
+    @Test
     void retryFailedDocumentCleansIndexesAndQueuesJob() {
         Fixture fixture = new Fixture();
         Document document = Document.create(fixture.kb.getId(), "a.txt", "text/plain", 3, "hash");
@@ -54,6 +87,31 @@ class KnowledgeBaseApplicationServiceIngestionTests {
         assertEquals(1, fixture.jobs.jobs.size());
     }
 
+    @Test
+    void deleteKnowledgeBaseCascadesDocumentsIndexesContentAndJobs() {
+        Fixture fixture = new Fixture();
+        Document document = Document.create(fixture.kb.getId(), "a.txt", "text/plain", 3, "hash");
+        String contentObjectId = fixture.contentStore.store(
+                fixture.kb.getId(),
+                document.getId(),
+                "a.txt",
+                "text/plain",
+                new ByteArrayInputStream("abc".getBytes())
+        );
+        document.attachContentObject(contentObjectId);
+        fixture.documents.save(document);
+        fixture.jobs.save(IngestionJob.create(document.getId(), fixture.kb.getId(), contentObjectId));
+
+        fixture.service.delete(fixture.kb.getId());
+
+        assertTrue(fixture.documents.docs.isEmpty());
+        assertTrue(fixture.contentStore.stored.isEmpty());
+        assertTrue(fixture.jobs.jobs.isEmpty());
+        assertEquals(1, fixture.vectorDeletes);
+        assertEquals(1, fixture.keywordDeletes);
+        assertTrue(fixture.knowledgeBases.deleted);
+    }
+
     private static class Fixture {
         private final KnowledgeBase kb = KnowledgeBase.create("kb", "", "user-1");
         private final InMemoryKnowledgeBaseRepository knowledgeBases = new InMemoryKnowledgeBaseRepository(kb);
@@ -62,23 +120,31 @@ class KnowledgeBaseApplicationServiceIngestionTests {
         private final InMemoryJobRepository jobs = new InMemoryJobRepository();
         private int vectorDeletes;
         private int keywordDeletes;
+        private int vectorStores;
+        private int keywordStores;
         private final KnowledgeBaseApplicationService service = new KnowledgeBaseApplicationService(
                 knowledgeBases,
                 documents,
                 new EmptyChatSessionRepository(),
                 new EmptyChatMessageRepository(),
-                (inputStream, fileName) -> "",
+                (inputStream, fileName) -> {
+                    try {
+                        return new String(inputStream.readAllBytes());
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                },
                 new RecursiveChunkingStrategy(1000, 0.15, 80, 200),
                 contentStore,
                 jobs,
                 new NoopEmbeddingPort(),
                 new VectorStorePort() {
-                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, List<float[]> embeddings) {}
+                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, List<float[]> embeddings) { vectorStores++; }
                     @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK) { return List.of(); }
                     @Override public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) { vectorDeletes++; }
                 },
                 new ChunkSearchIndexPort() {
-                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks) {}
+                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks) { keywordStores++; }
                     @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK) { return List.of(); }
                     @Override public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) { keywordDeletes++; }
                 },
@@ -94,12 +160,13 @@ class KnowledgeBaseApplicationServiceIngestionTests {
 
     private static class InMemoryKnowledgeBaseRepository implements KnowledgeBaseRepository {
         private final KnowledgeBase kb;
+        private boolean deleted;
         private InMemoryKnowledgeBaseRepository(KnowledgeBase kb) { this.kb = kb; }
         @Override public KnowledgeBase save(KnowledgeBase knowledgeBase) { return knowledgeBase; }
-        @Override public Optional<KnowledgeBase> findById(KnowledgeBaseId id) { return kb.getId().equals(id) ? Optional.of(kb) : Optional.empty(); }
-        @Override public List<KnowledgeBase> findAll() { return List.of(kb); }
-        @Override public List<KnowledgeBase> findAll(int page, int size) { return List.of(kb); }
-        @Override public void deleteById(KnowledgeBaseId id) {}
+        @Override public Optional<KnowledgeBase> findById(KnowledgeBaseId id) { return !deleted && kb.getId().equals(id) ? Optional.of(kb) : Optional.empty(); }
+        @Override public List<KnowledgeBase> findAll() { return deleted ? List.of() : List.of(kb); }
+        @Override public List<KnowledgeBase> findAll(int page, int size) { return findAll(); }
+        @Override public void deleteById(KnowledgeBaseId id) { deleted = kb.getId().equals(id); }
     }
 
     private static class InMemoryDocumentRepository implements DocumentRepository {
@@ -117,7 +184,11 @@ class KnowledgeBaseApplicationServiceIngestionTests {
         private final Map<String, byte[]> stored = new HashMap<>();
         @Override public String store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String fileName, String contentType, InputStream content) {
             String id = "content-" + stored.size();
-            stored.put(id, new byte[0]);
+            try {
+                stored.put(id, content.readAllBytes());
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
             return id;
         }
         @Override public InputStream open(String contentObjectId) { return new ByteArrayInputStream(stored.getOrDefault(contentObjectId, new byte[0])); }
@@ -126,9 +197,40 @@ class KnowledgeBaseApplicationServiceIngestionTests {
 
     private static class InMemoryJobRepository implements IngestionJobRepository {
         private final List<IngestionJob> jobs = new ArrayList<>();
-        @Override public IngestionJob save(IngestionJob job) { jobs.removeIf(existing -> existing.getId().equals(job.getId())); jobs.add(job); return job; }
+        private boolean failOnSave;
+        @Override public IngestionJob save(IngestionJob job) {
+            if (failOnSave) {
+                throw new RuntimeException("job save failed");
+            }
+            jobs.removeIf(existing -> existing.getId().equals(job.getId()));
+            jobs.add(job);
+            return job;
+        }
         @Override public Optional<IngestionJob> findLatestByDocumentId(DocumentId documentId) { return jobs.stream().filter(job -> job.getDocumentId().equals(documentId)).findFirst(); }
-        @Override public Optional<IngestionJob> claimNext(String workerId, Duration leaseDuration) { return Optional.empty(); }
+        @Override public Optional<IngestionJob> claimNext(String workerId, Duration leaseDuration) {
+            return jobs.stream()
+                    .filter(job -> job.getStatus() == IngestionJobStatus.QUEUED || job.getStatus() == IngestionJobStatus.RETRYING)
+                    .findFirst()
+                    .map(job -> {
+                        IngestionJob claimed = IngestionJob.reconstruct(
+                                job.getId(),
+                                job.getDocumentId(),
+                                job.getKnowledgeBaseId(),
+                                job.getContentObjectId(),
+                                IngestionJobStatus.RUNNING,
+                                job.getAttempts() + 1,
+                                job.getNextRunAt(),
+                                workerId,
+                                java.time.Instant.now().plus(leaseDuration),
+                                job.getFailureReason(),
+                                job.getCreatedAt(),
+                                java.time.Instant.now()
+                        );
+                        jobs.remove(job);
+                        jobs.add(claimed);
+                        return claimed;
+                    });
+        }
         @Override public void deleteByDocumentId(DocumentId documentId) { jobs.removeIf(job -> job.getDocumentId().equals(documentId)); }
         @Override public void deleteByKnowledgeBaseId(KnowledgeBaseId knowledgeBaseId) { jobs.removeIf(job -> job.getKnowledgeBaseId().equals(knowledgeBaseId)); }
     }
@@ -147,6 +249,7 @@ class KnowledgeBaseApplicationServiceIngestionTests {
 
     private static class EmptyChatSessionRepository implements ChatSessionRepository {
         @Override public ChatSession save(ChatSession session) { return session; }
+        @Override public long nextMessageSequence(ChatSessionId id) { return 1; }
         @Override public Optional<ChatSession> findById(ChatSessionId id) { return Optional.empty(); }
         @Override public Optional<ChatSession> findLatestByOwnerUserIdAndKnowledgeBaseId(String ownerUserId, KnowledgeBaseId knowledgeBaseId) { return Optional.empty(); }
     }

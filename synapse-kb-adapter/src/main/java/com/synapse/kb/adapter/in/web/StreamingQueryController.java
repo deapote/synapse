@@ -41,7 +41,8 @@ public class StreamingQueryController {
 
     private static final Logger log = LoggerFactory.getLogger(StreamingQueryController.class);
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d+)]");
-    private static final Pattern ANSWER_SEGMENT_SPLIT_PATTERN = Pattern.compile("\\n+");
+    private static final Pattern ANSWER_SENTENCE_PATTERN = Pattern.compile("[^。！？!?\\n]+(?:[。！？!?]+\\s*(?:\\[\\d+])*)?");
+    private static final Pattern INSUFFICIENT_PATTERN = Pattern.compile("知识库片段不足|资料不足|无法回答|不能回答|没有足够|未提供足够|不足以回答");
 
     private final QueryKnowledgeBaseUseCase queryUseCase;
     private final StreamingLlmPort streamingLlmPort;
@@ -170,8 +171,10 @@ public class StreamingQueryController {
         }
 
         boolean insufficientAnswer = isInsufficientAnswer(safeAnswer);
-        if (!safeAnswer.isBlank() && !insufficientAnswer && referenceCount > 0) {
-            if (usedSourceIds.isEmpty()) {
+        if (!safeAnswer.isBlank() && !insufficientAnswer) {
+            if (referenceCount == 0) {
+                warnings.add("回答没有可用检索来源");
+            } else if (usedSourceIds.isEmpty()) {
                 warnings.add("回答没有引用任何检索来源");
             } else {
                 List<String> unsupportedSegments = unsupportedSegments(safeAnswer);
@@ -189,27 +192,30 @@ public class StreamingQueryController {
     }
 
     private boolean isInsufficientAnswer(String answer) {
-        return answer.contains("知识库片段不足")
-                || answer.contains("资料不足")
-                || answer.contains("无法回答")
-                || answer.contains("不能回答")
-                || answer.contains("没有足够");
+        return INSUFFICIENT_PATTERN.matcher(answer).find();
     }
 
     private List<String> unsupportedSegments(String answer) {
         List<String> segments = new ArrayList<>();
-        for (String rawSegment : ANSWER_SEGMENT_SPLIT_PATTERN.split(answer)) {
-            String segment = rawSegment.strip();
+        Matcher sentenceMatcher = ANSWER_SENTENCE_PATTERN.matcher(answer);
+        while (sentenceMatcher.find()) {
+            String segment = sentenceMatcher.group().strip();
             if (segment.isBlank()
-                    || segment.length() <= 8
-                    || segment.endsWith(":")
-                    || segment.endsWith("：")
+                    || isNonFactualLeadIn(segment)
                     || CITATION_PATTERN.matcher(segment).find()) {
                 continue;
             }
             segments.add(segment);
         }
         return segments;
+    }
+
+    private boolean isNonFactualLeadIn(String segment) {
+        String normalized = segment.replaceAll("\\s+", "");
+        return normalized.length() <= 12
+                || normalized.endsWith(":")
+                || normalized.endsWith("：")
+                || normalized.matches("(?i)^(以下|另外|综上|因此|总之|具体来说|建议|推荐).{0,18}[：:]?$");
     }
 
     private ServerSentEvent<String> sseEvent(String eventName, Object data) {

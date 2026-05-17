@@ -1,11 +1,11 @@
-package com.synapse.auth.adapter.out.security;
+package com.synapse.kb.adapter.out.security;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.synapse.kb.port.out.AccessControlPort;
 import org.springframework.stereotype.Component;
 
 @Component
-public class SaTokenKbAccessControlAdapter implements AccessControlPort {
+public class SaTokenAccessControlAdapter implements AccessControlPort {
     @Override
     public String currentUserId() {
         StpUtil.checkLogin();

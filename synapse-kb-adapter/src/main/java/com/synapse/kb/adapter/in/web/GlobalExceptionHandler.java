@@ -33,7 +33,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception e) {
-        log.error("系统异常", e);
+        log.error("系统异常 type={} message={} traceId={}",
+                e.getClass().getName(), sanitize(e.getMessage()), TraceIdWebFilter.currentTraceId());
+        log.debug("系统异常堆栈 traceId={}", TraceIdWebFilter.currentTraceId(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of(
                         "error", "INTERNAL_ERROR",
@@ -41,5 +43,13 @@ public class GlobalExceptionHandler {
                         "traceId", TraceIdWebFilter.currentTraceId(),
                         "timestamp", Instant.now().toString()
                 ));
+    }
+
+    private String sanitize(String message) {
+        if (message == null || message.isBlank()) {
+            return "";
+        }
+        return message.replaceAll("(?i)(password|token|secret|authorization)\\s*[:=]\\s*\\S+", "$1=***")
+                .replaceAll("(/[^\\s:]+)+", "[path]");
     }
 }

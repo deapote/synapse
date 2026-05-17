@@ -58,6 +58,28 @@ class StreamingQueryControllerValidationTests {
     }
 
     @Test
+    void rejectsFactAnswerWithoutAvailableSources() {
+        CitationValidationResponse validation = controller.validateAnswer(
+                "异常不要用来做流程控制。",
+                0
+        );
+
+        assertFalse(validation.trusted());
+        assertTrue(validation.warnings().contains("回答没有可用检索来源"));
+    }
+
+    @Test
+    void rejectsZeroCitationId() {
+        CitationValidationResponse validation = controller.validateAnswer(
+                "异常处理需要记录日志。[0]",
+                2
+        );
+
+        assertFalse(validation.trusted());
+        assertTrue(validation.warnings().contains("回答引用了不存在的来源 [0]"));
+    }
+
+    @Test
     void allowsInsufficientAnswerWithoutCitation() {
         CitationValidationResponse validation = controller.validateAnswer(
                 "知识库片段不足以回答该问题。",

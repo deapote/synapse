@@ -75,6 +75,14 @@ public class ChatSession {
         return messageCount;
     }
 
+    public void recordMessageSequence(long sequence) {
+        if (sequence <= 0) {
+            throw new DomainException("消息序号必须大于 0");
+        }
+        messageCount = Math.max(messageCount, sequence);
+        updatedAt = Instant.now();
+    }
+
     public void updateSummary(String summary, long summarizedUntilSequence) {
         this.summary = summary == null ? "" : summary.strip();
         this.summarizedUntilSequence = Math.max(this.summarizedUntilSequence, summarizedUntilSequence);

@@ -7,6 +7,7 @@ import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
+import reactor.util.context.ContextView;
 
 import java.util.UUID;
 
@@ -20,10 +21,8 @@ public class TraceIdWebFilter implements WebFilter {
         String traceId = resolveTraceId(exchange.getRequest());
         exchange.getAttributes().put(TRACE_ID, traceId);
         exchange.getResponse().getHeaders().set(TRACE_HEADER, traceId);
-        return Mono.defer(() -> {
-                    MDC.put(TRACE_ID, traceId);
-                    return chain.filter(exchange);
-                })
+        return chain.filter(exchange)
+                .doOnEach(signal -> withTraceId(signal.getContextView()))
                 .contextWrite(context -> context.put(TRACE_ID, traceId))
                 .doFinally(signalType -> MDC.remove(TRACE_ID));
     }
@@ -36,5 +35,13 @@ public class TraceIdWebFilter implements WebFilter {
     private String resolveTraceId(ServerHttpRequest request) {
         String traceId = request.getHeaders().getFirst(TRACE_HEADER);
         return traceId == null || traceId.isBlank() ? UUID.randomUUID().toString() : traceId;
+    }
+
+    private void withTraceId(ContextView context) {
+        String traceId = context.getOrDefault(TRACE_ID, null);
+        if (traceId == null || traceId.isBlank()) {
+            return;
+        }
+        MDC.put(TRACE_ID, traceId);
     }
 }

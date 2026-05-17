@@ -13,8 +13,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.dao.DataAccessException;
 
+import java.util.Arrays;
 import java.util.EnumSet;
 
 @Configuration
@@ -25,11 +27,15 @@ public class AuthDataInitializer {
     ApplicationRunner seedAuthData(RoleDefinitionRepository roleRepository,
                                    UserAccountRepository userRepository,
                                    PasswordHasherPort passwordHasher,
+                                   Environment environment,
                                    @Value("${synapse.auth.bootstrap-admin.username:admin}") String adminUsername,
                                    @Value("${synapse.auth.bootstrap-admin.password:ChangeMe123!}") String adminPassword) {
         return args -> {
             try {
                 if ("ChangeMe123!".equals(adminPassword)) {
+                    if (isProduction(environment)) {
+                        throw new IllegalStateException("生产环境必须覆盖 synapse.auth.bootstrap-admin.password");
+                    }
                     log.warn("当前使用默认 bootstrap admin 密码，请在生产环境通过 synapse.auth.bootstrap-admin.password 覆盖");
                 }
                 if (roleRepository.findByName(RoleName.ADMIN).isEmpty()) {
@@ -48,5 +54,10 @@ public class AuthDataInitializer {
                 log.warn("MongoDB 不可用，跳过认证种子数据初始化: {}", e.getMessage());
             }
         };
+    }
+
+    private boolean isProduction(Environment environment) {
+        return Arrays.stream(environment.getActiveProfiles())
+                .anyMatch(profile -> "prod".equalsIgnoreCase(profile) || "production".equalsIgnoreCase(profile));
     }
 }

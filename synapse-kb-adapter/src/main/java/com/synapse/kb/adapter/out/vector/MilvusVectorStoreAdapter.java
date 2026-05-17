@@ -56,7 +56,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     private final ConsistencyLevel consistencyLevel;
     private final io.micrometer.core.instrument.Timer searchTimer;
 
-    private MilvusClientV2 client;
+    private volatile MilvusClientV2 client;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
 
     public MilvusVectorStoreAdapter(
@@ -264,8 +264,8 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     private void delete(String collection, KnowledgeBaseId knowledgeBaseId, DocumentId documentId) {
         client.delete(DeleteReq.builder()
                 .collectionName(collection)
-                .filter("knowledgeBaseId == '" + escapeFilterValue(knowledgeBaseId.value())
-                        + "' && documentId == '" + escapeFilterValue(documentId.value()) + "'")
+                .filter("knowledgeBaseId == '" + safeFilterValue(knowledgeBaseId.value())
+                        + "' && documentId == '" + safeFilterValue(documentId.value()) + "'")
                 .build());
     }
 
@@ -283,7 +283,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
                 .collectionName(collection)
                 .data(List.of(new FloatVec(queryEmbedding)))
-                .filter("knowledgeBaseId == '" + escapeFilterValue(knowledgeBaseId.value()) + "'")
+                .filter("knowledgeBaseId == '" + safeFilterValue(knowledgeBaseId.value()) + "'")
                 .topK(topK)
                 .metricType(IndexParam.MetricType.COSINE)
                 .outputFields(List.of("documentId", "documentName", "chunkIndex",
@@ -337,8 +337,11 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         return data;
     }
 
-    private String escapeFilterValue(String value) {
-        return value.replace("'", "\\'");
+    private String safeFilterValue(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9_-]+")) {
+            throw new DomainException("非法的向量过滤条件");
+        }
+        return value;
     }
 
     private float normalizeScore(Float score) {

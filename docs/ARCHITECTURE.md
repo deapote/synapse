@@ -147,11 +147,11 @@ StreamingQueryController
   -> 分数融合重排(vectorWeight + keywordWeight)
   -> 组装聊天摘要、最近消息、引用片段和用户问题
   -> StreamingLlmPort.generateStream()
-  -> SSE: session -> token* -> references -> complete
+  -> SSE: session -> token* -> references -> validation -> complete
   -> 生成完成后保存 assistant 消息和引用
 ```
 
-LLM 流式异常通过 SSE `error` 事件返回，不发送伪 `complete`。前端关闭 SSE 时会关闭 Java `Stream` 并触发底层生成取消。
+LLM 流式异常通过 SSE `error` 事件返回，不发送伪 `complete`。前端关闭 SSE 时会关闭 Java `Stream` 并触发底层生成取消。生成完成后，后端会对答案中的 `[sourceId]` 引用做确定性校验，并通过 `validation` 事件返回可信状态、实际使用来源和警告。
 
 ## 5. 领域模型
 

@@ -10,6 +10,8 @@ public interface ChatSessionRepository {
 
     ChatSession save(ChatSession session);
 
+    long nextMessageSequence(ChatSessionId id);
+
     Optional<ChatSession> findById(ChatSessionId id);
 
     Optional<ChatSession> findLatestByOwnerUserIdAndKnowledgeBaseId(String ownerUserId, KnowledgeBaseId knowledgeBaseId);

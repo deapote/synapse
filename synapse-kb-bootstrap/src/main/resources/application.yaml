@@ -48,6 +48,7 @@ synapse:
     keyword-weight: 0.35
     keyword:
       max-candidates: 5000
+      document-frequency-cache-ttl-seconds: 300
     bulkhead:
       retrieval-concurrency: 16
     retrieval:

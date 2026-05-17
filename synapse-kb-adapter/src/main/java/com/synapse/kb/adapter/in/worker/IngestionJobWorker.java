@@ -16,6 +16,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
@@ -34,10 +35,13 @@ public class IngestionJobWorker implements DisposableBean {
             ProcessIngestionJobUseCase processUseCase,
             MeterRegistry meterRegistry,
             @Value("${synapse.ingestion.job.enabled:true}") boolean enabled,
-            @Value("${synapse.ingestion.job.concurrency:2}") int concurrency) {
+            @Value("${synapse.ingestion.job.concurrency:2}") int concurrency,
+            @Value("${synapse.ingestion.virtual-threads:true}") boolean virtualThreads) {
         this.processUseCase = processUseCase;
         int safeConcurrency = Math.max(1, concurrency);
-        this.executorService = Executors.newFixedThreadPool(safeConcurrency);
+        this.executorService = virtualThreads
+                ? Executors.newVirtualThreadPerTaskExecutor()
+                : Executors.newFixedThreadPool(safeConcurrency);
         this.permits = new Semaphore(safeConcurrency);
         this.enabled = new AtomicBoolean(enabled);
         this.workerId = ManagementFactory.getRuntimeMXBean().getName() + "-" + UUID.randomUUID();
@@ -58,9 +62,6 @@ public class IngestionJobWorker implements DisposableBean {
                     if (processed) {
                         claimedCounter.increment();
                     }
-                    if (!processed) {
-                        enabled.compareAndSet(true, true);
-                    }
                 } catch (Exception e) {
                     log.error("摄入任务 worker 执行失败", e);
                 } finally {
@@ -72,6 +73,14 @@ public class IngestionJobWorker implements DisposableBean {
 
     @Override
     public void destroy() {
-        executorService.shutdownNow();
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            executorService.shutdownNow();
+        }
     }
 }

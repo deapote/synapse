@@ -308,6 +308,15 @@ synapse-token: <tokenValue>
 
 删除会同时清理 Milvus 向量和 Mongo 关键词索引。Milvus 删除条件同时包含 `knowledgeBaseId` 和 `documentId`，避免跨知识库误删。
 
+### 6.4 重试失败文档
+
+```http
+POST /api/documents/{id}/retry
+synapse-token: <tokenValue>
+```
+
+仅 `FAILED` 文档可重试。后端会清理该文档已有 Milvus 向量和 Mongo 关键词索引，将状态重置为 `PENDING`，并重新提交后台摄入任务。
+
 ## 7. 聊天会话接口
 
 聊天会话按“当前用户 + 知识库”隔离。即使拥有同一个知识库访问权，也不能读取其他用户的会话。
@@ -389,7 +398,10 @@ event: token
 data: {"token":"文本片段"}
 
 event: references
-data: {"references":[{"documentId":"doc-id","documentName":"产品手册.pdf","chunkText":"...","score":0.91,"startPosition":0,"endPosition":200}]}
+data: {"references":[{"sourceId":1,"documentId":"doc-id","documentName":"产品手册.pdf","chunkText":"...","score":0.91,"startPosition":0,"endPosition":200,"used":true}]}
+
+event: validation
+data: {"trusted":true,"usedSourceIds":[1],"warnings":[]}
 
 event: complete
 data: {"sessionId":"session-id"}
@@ -399,10 +411,10 @@ data: {"sessionId":"session-id"}
 
 ```text
 event: error
-data: {"message":"错误信息"}
+data: {"message":"错误信息","traceId":"trace-id"}
 ```
 
-后端在 prompt 中用边界标记隔离检索片段和用户问题，并明确检索内容不具备指令优先级，以降低文档 prompt 注入风险。
+后端在 prompt 中用 `<source>` 和 `<user_question>` 边界标记隔离检索片段和用户问题，并明确检索内容不具备指令优先级，以降低文档 prompt 注入风险。每个检索片段会分配 `sourceId`，模型回答应使用 `[1]` 形式引用来源。`validation` 事件用于返回引用编号是否合法、哪些来源被答案实际使用，以及引用校验警告。
 
 查询链路会先尝试 Query 改写，并用原 query 与改写 query 的 embedding 余弦相似度做质量门禁；默认阈值为 `0.8`，未通过或改写失败时自动回退原 query。检索结果来自 Milvus 向量召回与 Mongo BM25 关键词召回的融合重排，`score` 为融合后的最终分数。
 

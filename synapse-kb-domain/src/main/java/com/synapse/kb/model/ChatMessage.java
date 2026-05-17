@@ -53,6 +53,16 @@ public record ChatMessage(
             String content,
             List<ChunkReference> references
     ) {
+        return createWithSequence(session, role, content, references, session.nextSequence());
+    }
+
+    public static ChatMessage createWithSequence(
+            ChatSession session,
+            ChatRole role,
+            String content,
+            List<ChunkReference> references,
+            long sequence
+    ) {
         return new ChatMessage(
                 UUID.randomUUID().toString(),
                 session.getId(),
@@ -61,7 +71,7 @@ public record ChatMessage(
                 role,
                 content,
                 references,
-                session.nextSequence(),
+                sequence,
                 Instant.now()
         );
     }
