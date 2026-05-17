@@ -1,0 +1,142 @@
+---
+title: 调试环境配置
+description: IDEA 调试配置、关键断点、Milvus Attu 可视化
+---
+
+# 动手实践 —— 调试环境配置
+
+学会在 IDE 中调试 Synapse，是理解代码执行流程的最快方式。
+
+## IDEA 调试配置
+
+### 1. 启动类
+
+`synapse-kb-bootstrap/src/main/java/com/synapse/SynapseApplication.java`
+
+右键 → `Debug 'SynapseApplication'`
+
+### 2. 确保依赖服务已启动
+
+```bash
+# MongoDB、Milvus、Ollama 必须在调试前启动
+docker ps
+```
+
+### 3. 前端代理配置
+
+`synapse-frontend/vite.config.ts` 中确认 proxy 指向正确：
+
+```typescript
+server: {
+  proxy: {
+    '/api': {
+      target: 'http://localhost:8080',
+      changeOrigin: true
+    }
+  }
+}
+```
+
+启动前端（不需要调试后端时）：
+
+```bash
+cd synapse-frontend && npm run dev
+```
+
+## 关键断点位置推荐
+
+### 认证流程
+
+| 文件 | 方法 | 观察什么 |
+|------|------|----------|
+| `AuthApplicationService.java:login()` | 完整方法 | 用户名查重、密码校验、角色聚合 |
+| `SaTokenReactorBridge.java:blockingCall()` | 方法入口 | `SaReactorHolder.sync()` 的上下文传递 |
+| `SaTokenSecurityConfig.java` | `SaReactorFilter` 配置 | 路由白名单规则 |
+
+### 文档摄入流程
+
+| 文件 | 方法 | 观察什么 |
+|------|------|----------|
+| `DocumentController.java:upload()` | 方法入口 | `FilePart` 处理、`contentHash` 计算 |
+| `KnowledgeBaseApplicationService.java:ingest()` | 完整方法 | 重复检查、补偿逻辑 |
+| `KnowledgeBaseApplicationService.java:processDocument()` | 完整方法 | 状态流转、分块、向量化 |
+| `MongoIngestionJobRepository.java:claimNext()` | `findAndModify` 调用 | 原子锁如何防止并发冲突 |
+
+### 问答流程
+
+| 文件 | 方法 | 观察什么 |
+|------|------|----------|
+| `KnowledgeBaseApplicationService.java:prepare()` | 完整方法 | Query 改写、记忆组装、混合检索 |
+| `KnowledgeBaseApplicationService.java:mergeAndRerank()` | 完整方法 | 两个结果列表如何融合 |
+| `StreamingQueryController.java:streamQuery()` | `Flux.using()` 块 | SSE 事件组装 |
+
+### 聊天记忆
+
+| 文件 | 方法 | 观察什么 |
+|------|------|----------|
+| `KnowledgeBaseApplicationService.java:appendMemoryContext()` | 完整方法 | 摘要 + 最近消息拼接 |
+| `KnowledgeBaseApplicationService.java:summarizeIfNeeded()` | 完整方法 | 触发条件、摘要调用 |
+| `MongoChatSessionRepository.java:nextMessageSequence()` | `findAndModify` | 原子递增 messageCount |
+
+## 如何观察 Sa-Token 上下文
+
+在任意 Application Service 方法里打断点，在 Debug 窗口的 **Evaluate Expression**（Alt+F8）中执行：
+
+```java
+StpUtil.getLoginId()           // 当前登录用户 ID
+StpUtil.getTokenValue()        // 当前 token
+StpUtil.getPermissionList()    // 当前用户权限列表
+```
+
+如果返回 `null`，说明上下文丢失——检查是否经过了 `SaTokenReactorBridge.blockingCall()`。
+
+## Milvus Attu 可视化工具
+
+Attu 是 Milvus 的 GUI 管理工具，可以直观查看向量数据。
+
+### 启动 Attu
+
+```bash
+docker run -p 8000:3000 -e MILVUS_URL=localhost:19530 zilliz/attu:latest
+```
+
+访问 `http://localhost:8000`
+
+### 查看内容
+
+- **Collections**：`document_chunks` collection 的 schema 和索引
+- **Vector Search**：手动输入向量做相似度搜索
+- **Data Preview**：查看实际存储的向量记录
+
+### 验证摄入结果
+
+上传一个文档后，在 Attu 中确认：
+1. Collection 中有新记录
+2. `knowledgeBaseId` 和 `documentId` 字段正确
+3. 向量维度 = 1536（对应 gme-Qwen2 模型）
+
+## MongoDB Compass（可选）
+
+如果需要可视化查看 MongoDB 数据：
+
+```bash
+# 下载 MongoDB Compass 或使用 Studio 3T
+# 连接字符串：mongodb://localhost:27017/synapse
+```
+
+关键集合：
+- `knowledge_base` —— 知识库元数据
+- `document` —— 文档记录和状态
+- `ingestion_job` —— 摄入任务队列
+- `chat_session` —— 聊天会话
+- `chat_message` —— 聊天消息
+- `chunk_index` / `postings` / `corpus_stats` —— BM25 关键词索引
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] 后端 Debug 启动前需要确认哪些依赖服务在运行？
+- [ ] 在哪里打断点可以观察 Query 改写是否生效？
+- [ ] 如何验证 Sa-Token 上下文是否正确传递？
+- [ ] Milvus Attu 可以看到哪些信息？

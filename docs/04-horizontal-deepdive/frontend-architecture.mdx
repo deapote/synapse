@@ -1,0 +1,224 @@
+---
+title: 前端架构设计
+description: Pinia Store 模式、SSE 手动解析、竞态防护、轮询策略
+---
+
+# 横向深入 —— 前端架构设计
+
+Synapse 前端使用 Vue 3 + Vite + Pinia。本章讲解后端开发者需要理解的前端核心设计，重点在状态管理和 SSE 流式处理。
+
+## 目录结构
+
+```
+synapse-frontend/src/
+├── api/           # API 客户端（axios + 手动 SSE）
+│   ├── client.ts      # axios 实例配置
+│   ├── auth.ts        # 登录/登出
+│   ├── query.ts       # 流式问答（原生 fetch SSE）
+│   ├── knowledgeBase.ts
+│   └── document.ts
+├── stores/        # Pinia 状态管理
+│   ├── auth.ts
+│   ├── chat.ts        # 核心：流式聊天状态
+│   ├── knowledgeBase.ts
+│   └── document.ts
+├── composables/   # 可复用逻辑
+│   └── usePolling.ts  # 轮询 Hook
+├── views/         # 页面组件
+│   ├── LoginView.vue
+│   ├── KnowledgeBaseList.vue
+│   ├── KnowledgeBaseDetail.vue
+│   ├── ChatView.vue
+│   └── AdminView.vue
+├── components/    # 通用组件
+├── router/        # Vue Router
+└── types/         # TypeScript 类型定义
+```
+
+## Pinia Store 设计模式
+
+项目中每个 Store 都是 **Composition API 风格**：
+
+```typescript
+export const useChatStore = defineStore('chat', () => {
+  // State
+  const messages = ref<ChatMessage[]>([])
+  const loading = ref(false)
+  // ...
+
+  // Actions
+  function sendQuestionStream(knowledgeBaseId: string, query: string) { ... }
+  function stopGeneration() { ... }
+
+  return { messages, loading, sendQuestionStream, stopGeneration }
+})
+```
+
+对比 Options API 风格：
+- **Composition API**：`ref` + 函数，和 Vue 3 `<script setup>` 一致
+- 更灵活，逻辑可按功能组织而非按选项（state/mutations/actions）分割
+
+## chat.ts 核心设计
+
+### 竞态防护 —— currentGeneration
+
+```typescript
+let currentGeneration = 0
+
+function sendQuestionStream(knowledgeBaseId: string, query: string) {
+    const generation = ++currentGeneration  // 每次请求递增
+
+    // 添加用户消息和空助手消息
+    // ...
+
+    api.streamQueryKnowledgeBase(knowledgeBaseId, query, sessionId.value, {
+        onToken: (token: string) => {
+            if (generation !== currentGeneration) return  // 过期回调直接丢弃
+            tokenBuffer += token
+            startFlushTimer()
+        },
+        // ... 其他回调同理
+    })
+}
+
+function stopGeneration() {
+    currentGeneration++  // 递增后，所有旧回调都被丢弃
+    if (currentAbortCtrl) {
+        currentAbortCtrl.abort()
+    }
+}
+```
+
+**问题场景**：用户快速连点发送、或切换知识库时旧请求才返回。如果不丢弃过期回调，消息会串到当前对话里。
+
+**解决方案**：每次操作（发送、切换、新建会话）都递增 `currentGeneration`，回调里检查 generation 是否匹配。
+
+### Token 缓冲 —— 解决 Vue 批量更新问题
+
+```typescript
+let tokenBuffer = ''
+let flushTimer: ReturnType<typeof setInterval> | null = null
+
+function startFlushTimer() {
+    if (flushTimer) return
+    flushTimer = setInterval(() => {
+        flushTokens()
+    }, 40)  // 每 40ms 刷新一次
+}
+
+function flushTokens() {
+    if (!tokenBuffer) return
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg?.role === 'assistant') {
+        lastMsg.content += tokenBuffer
+    }
+    tokenBuffer = ''
+}
+```
+
+**问题**：SSE 的 `onToken` 回调每秒触发几十次，每次直接 `msg.content += token` 会导致 Vue 响应式系统频繁更新 DOM，打字机效果卡顿。
+
+**解决方案**：token 先写入 `tokenBuffer`，定时器每 40ms 批量刷新一次。这样 DOM 更新频率从"每秒几十次"降到"每秒 25 次"，打字机效果流畅。
+
+### AbortController —— 取消流式生成
+
+```typescript
+let currentAbortCtrl: AbortController | null = null
+
+function sendQuestionStream(...) {
+    currentAbortCtrl = api.streamQueryKnowledgeBase(..., { ... })
+}
+
+function stopGeneration() {
+    if (currentAbortCtrl) {
+        currentAbortCtrl.abort()  // 触发 fetch signal 取消
+        currentAbortCtrl = null
+    }
+}
+```
+
+`AbortController` 是浏览器原生 API，把 `signal` 传给 `fetch()` 后，调用 `abort()` 会中断网络连接，后端感知到连接断开会自动停止 LLM 生成。
+
+## SSE 手动解析 —— 为什么不用 EventSource
+
+`api/query.ts` 使用原生 `fetch + ReadableStream` 手动解析 SSE，而不是浏览器内置的 `EventSource`：
+
+```typescript
+const reader = response.body.getReader()
+const decoder = new TextDecoder()
+let buffer = ''
+
+while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE 按 \n\n 分割事件块
+    const chunks = buffer.split('\n\n')
+    buffer = chunks.pop() || ''  // 最后一个可能不完整，留到下次
+
+    for (const chunk of chunks) {
+        // 解析 event: 和 data: 行
+        // ...
+    }
+}
+```
+
+**不用 EventSource 的原因**：
+1. **无法自定义请求头**——EventSource 不支持 `Authorization` 或自定义 token header
+2. **无法 POST 请求体**——EventSource 只能用 GET
+3. **无法取消**——没有原生取消机制
+
+手动解析的缺点是多写几十行代码，但获得了完全的控制权。
+
+## 轮询文档状态 —— usePolling
+
+```typescript
+export function usePolling<T>(
+  fn: () => Promise<T>,
+  interval: number = 2000,   // 默认 2 秒
+  maxAttempts: number = 30   // 最多 60 秒
+) {
+  function start(condition?: (result: T) => boolean) {
+    timer = setInterval(async () => {
+      attempts.value++
+      if (attempts.value >= maxAttempts) { stop(); return }
+
+      try {
+        const result = await fn()
+        if (condition?.(result)) { stop() }
+      } catch {
+        // ignore polling errors
+      }
+    }, interval)
+  }
+
+  onUnmounted(stop)  // 组件卸载自动停止
+
+  return { isPolling, attempts, start, stop }
+}
+```
+
+在 `KnowledgeBaseDetail.vue` 中使用：
+
+```typescript
+const polling = usePolling(fetchDocuments, 2000, 30)
+
+// 开始轮询，直到所有文档都不在 PENDING/PROCESSING 状态
+polling.start(docs => docs.every(d => d.status !== 'PENDING' && d.status !== 'PROCESSING'))
+```
+
+**为什么不直接用 WebSocket？**
+- 轮询实现简单，不需要维护 WebSocket 连接
+- 文档状态变化不频繁（秒级），轮询足够
+- 后端不需要额外的 WebSocket 基础设施
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `currentGeneration` 解决了什么前端问题？
+- [ ] Token 缓冲为什么需要 40ms 定时器？
+- [ ] `AbortController` 如何取消后端的 LLM 生成？
+- [ ] 为什么不用 EventSource 而用原生 fetch 解析 SSE？
+- [ ] `usePolling` 的终止条件是怎么设置的？

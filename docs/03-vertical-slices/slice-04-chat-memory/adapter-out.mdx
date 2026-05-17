@@ -1,0 +1,61 @@
+---
+title: Adapter-Out 层
+description: MongoChatSessionRepository、MongoChatMessageRepository、OllamaChatMemorySummarizerAdapter
+---
+
+# 聊天记忆 —— Adapter-Out 层
+
+## MongoChatSessionRepository
+
+文件：`synapse-kb-adapter/.../out/persistence/MongoChatSessionRepository.java`
+
+```java
+@Component
+public class MongoChatSessionRepository implements ChatSessionRepository {
+    private final MongoTemplate mongoTemplate;
+
+    @Override
+    public long nextMessageSequence(ChatSessionId id) {
+        // 使用 findAndModify 原子递增 messageCount
+        Query query = Query.query(Criteria.where("_id").is(id.value()));
+        Update update = new Update().inc("messageCount", 1);
+        ChatSessionDocument doc = mongoTemplate.findAndModify(
+            query, update,
+            FindAndModifyOptions.options().returnNew(true),
+            ChatSessionDocument.class
+        );
+        return doc != null ? doc.getMessageCount() : 0;
+    }
+}
+```
+
+`findAndModify` 是 MongoDB 的原子操作，保证并发环境下 `messageCount` 不会重复。
+
+## OllamaChatMemorySummarizerAdapter
+
+文件：`synapse-kb-adapter/.../out/llm/OllamaChatMemorySummarizerAdapter.java`
+
+```java
+@Component
+public class OllamaChatMemorySummarizerAdapter implements ChatMemorySummarizerPort {
+    private final OllamaChatModel chatModel;
+
+    @Override
+    @CircuitBreaker(name = "ollamaSummarizer")
+    @Retry(name = "ollamaSummarizer")
+    @Bulkhead(name = "ollamaSummarizer")
+    public String summarize(String existingSummary, List<ChatMessage> messages, int maxChars) {
+        String prompt = buildSummarizePrompt(existingSummary, messages, maxChars);
+        return chatModel.chat(prompt);
+    }
+}
+```
+
+带熔断、重试、限流，防止摘要生成影响主流程。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `findAndModify` 的作用是什么？
+- [ ] 摘要生成为什么也要带熔断/重试/限流？

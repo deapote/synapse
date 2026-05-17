@@ -1,0 +1,77 @@
+---
+title: 用户故事
+description: 认证登录要解决什么问题，涉及哪些角色
+---
+
+# 切片1：认证登录 —— 用户故事
+
+## 场景
+
+用户打开 Synapse 的登录页面，输入用户名和密码，点击登录。系统需要确认这个用户是谁、有什么权限，然后才能让他访问知识库等功能。
+
+## 涉及的角色
+
+| 角色 | 职责 |
+|------|------|
+| **用户** | 提供用户名和密码 |
+| **浏览器** | 发送 HTTP 请求，存储 Token |
+| **AuthController** | 接收登录请求，调用业务逻辑 |
+| **AuthApplicationService** | 校验凭证、创建会话、聚合权限 |
+| **UserAccount** (Domain) | 封装用户状态和校验规则 |
+| **MongoUserAccountRepository** | 从 MongoDB 查询和保存用户 |
+| **BCryptPasswordHasherAdapter** | 比对密码 |
+| **SaTokenLoginSessionAdapter** | 创建登录会话 |
+| **SaTokenPermissionAdapter** | 提供权限数据源 |
+
+## 预期行为
+
+### 正常流程
+
+1. 用户输入正确的用户名和密码
+2. 系统返回 Token 和用户信息
+3. 后续请求携带 Token，系统自动识别用户身份
+4. 访问管理接口时，系统检查是否有 `AUTH_ADMIN` 权限
+
+### 异常流程
+
+1. 用户名或密码错误 → 返回"用户名或密码错误"（不告诉具体是哪个错了）
+2. 用户被禁用 → 返回"用户名或密码错误"
+3. 未登录访问接口 → 返回 401
+4. 普通用户访问管理接口 → 返回 403
+
+## 为什么从这个切片开始学
+
+认证登录是所有系统的**基础功能**，但它同时展示了 DDD 分层架构的完整链路：
+
+- **Domain**：用户实体、值对象、校验规则
+- **Application**：用例编排、端口定义
+- **Adapter-In**：Controller、DTO、请求响应
+- **Adapter-Out**：Repository、密码哈希、会话管理
+- **Config**：Bean 组装
+
+这个切片相对简单（没有异步、没有流式、没有复杂算法），是学习分层架构的**最佳入门**。
+
+学完这个切片后，你会理解：
+- 一个 HTTP 请求是怎么从 Controller 一步步走到数据库的
+- 每一层的职责边界在哪里
+- 为什么 Domain 层不能依赖 Spring
+- 端口和适配器是怎么配合的
+
+## 本章涉及的主要代码文件
+
+| 层级 | 文件路径 |
+|------|---------|
+| Domain | `synapse-auth-domain/.../model/UserAccount.java` |
+| Domain | `synapse-auth-domain/.../model/UserId.java` |
+| Domain | `synapse-auth-domain/.../model/RoleName.java` |
+| Domain | `synapse-auth-domain/.../model/AuthPermission.java` |
+| Domain | `synapse-auth-domain/.../repository/UserAccountRepository.java` |
+| Application | `synapse-auth-application/.../port/in/AuthenticationUseCase.java` |
+| Application | `synapse-auth-application/.../port/service/AuthApplicationService.java` |
+| Adapter-In | `synapse-auth-adapter/.../in/web/AuthController.java` |
+| Adapter-Out | `synapse-auth-adapter/.../out/security/SaTokenLoginSessionAdapter.java` |
+| Adapter-Out | `synapse-auth-adapter/.../out/security/BCryptPasswordHasherAdapter.java` |
+| Adapter-Out | `synapse-auth-adapter/.../out/persistence/MongoUserAccountRepository.java` |
+| Config | `synapse-auth-config/.../AuthBeanConfig.java` |
+| Config | `synapse-auth-config/.../AuthDataInitializer.java` |
+| Config | `synapse-auth-config/.../SaTokenSecurityConfig.java` |

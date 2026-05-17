@@ -2,7 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
   "name": "Synapse",
-  "description": "基于 Spring Boot + LangChain4j 的多知识库 RAG 系统",
+  "description": "基于 Spring Boot + LangChain4j 的多知识库 RAG 系统 —— 从源码学技术",
   "colors": {
     "primary": "#4F46E5",
     "light": "#818CF8",
@@ -16,76 +16,132 @@
   "navigation": {
     "groups": [
       {
-        "group": "介绍",
+        "group": "项目概览",
         "pages": [
-          "introduction/index",
-          "introduction/quickstart",
-          "introduction/tech-stack",
-          "introduction/architecture"
+          "00-overview/index",
+          "00-overview/tech-stack",
+          "00-overview/architecture-overview",
+          "00-overview/prerequisites"
         ]
       },
       {
-        "group": "使用指南",
+        "group": "快速上手",
         "pages": [
-          "guides/authentication",
-          "guides/knowledge-base",
-          "guides/document-upload",
-          "guides/query-and-chat",
-          "guides/admin"
+          "01-getting-started/quickstart",
+          "01-getting-started/first-use"
         ]
       },
       {
         "group": "核心概念",
         "pages": [
-          "core-concepts/rag-overview",
-          "core-concepts/ddd-layers",
-          "core-concepts/domain-model",
-          "core-concepts/state-machine",
-          "core-concepts/reactive-boundary",
-          "core-concepts/chunking-strategy"
+          "02-core-concepts/what-is-rag",
+          "02-core-concepts/vector-search",
+          "02-core-concepts/ddd-intro",
+          "02-core-concepts/layered-architecture",
+          "02-core-concepts/state-machine"
         ]
       },
       {
-        "group": "开发者指南",
+        "group": "切片1：认证登录",
         "pages": [
-          "developer-guide/domain-layer",
-          "developer-guide/application-layer",
-          "developer-guide/adapter-layer",
-          "developer-guide/config-layer",
-          "developer-guide/frontend",
-          "developer-guide/upload-flow",
-          "developer-guide/query-flow",
-          "developer-guide/chat-memory",
-          "developer-guide/code-deepdive"
+          "03-vertical-slices/slice-01-auth/story",
+          "03-vertical-slices/slice-01-auth/end-to-end",
+          "03-vertical-slices/slice-01-auth/domain",
+          "03-vertical-slices/slice-01-auth/application",
+          "03-vertical-slices/slice-01-auth/adapter-in",
+          "03-vertical-slices/slice-01-auth/adapter-out",
+          "03-vertical-slices/slice-01-auth/config"
         ]
       },
       {
-        "group": "API 参考",
+        "group": "切片2：文档摄入",
         "pages": [
-          "api-reference/overview",
-          "api-reference/authentication",
-          "api-reference/admin",
-          "api-reference/knowledge-base",
-          "api-reference/document",
-          "api-reference/chat",
-          "api-reference/streaming-query"
+          "03-vertical-slices/slice-02-document-upload/story",
+          "03-vertical-slices/slice-02-document-upload/end-to-end",
+          "03-vertical-slices/slice-02-document-upload/domain",
+          "03-vertical-slices/slice-02-document-upload/application",
+          "03-vertical-slices/slice-02-document-upload/adapter-in",
+          "03-vertical-slices/slice-02-document-upload/adapter-out",
+          "03-vertical-slices/slice-02-document-upload/config"
+        ]
+      },
+      {
+        "group": "切片3：问答检索",
+        "pages": [
+          "03-vertical-slices/slice-03-query/story",
+          "03-vertical-slices/slice-03-query/end-to-end",
+          "03-vertical-slices/slice-03-query/domain",
+          "03-vertical-slices/slice-03-query/application",
+          "03-vertical-slices/slice-03-query/adapter-in",
+          "03-vertical-slices/slice-03-query/adapter-out",
+          "03-vertical-slices/slice-03-query/config"
+        ]
+      },
+      {
+        "group": "切片4：聊天记忆",
+        "pages": [
+          "03-vertical-slices/slice-04-chat-memory/story",
+          "03-vertical-slices/slice-04-chat-memory/end-to-end",
+          "03-vertical-slices/slice-04-chat-memory/domain",
+          "03-vertical-slices/slice-04-chat-memory/application",
+          "03-vertical-slices/slice-04-chat-memory/adapter-in",
+          "03-vertical-slices/slice-04-chat-memory/adapter-out",
+          "03-vertical-slices/slice-04-chat-memory/config"
+        ]
+      },
+      {
+        "group": "横向深入",
+        "pages": [
+          "04-horizontal-deepdive/domain-patterns",
+          "04-horizontal-deepdive/port-design",
+          "04-horizontal-deepdive/reactive-bridge",
+          "04-horizontal-deepdive/hybrid-retrieval",
+          "04-horizontal-deepdive/chunking-algorithm",
+          "04-horizontal-deepdive/frontend-architecture"
+        ]
+      },
+      {
+        "group": "动手实践",
+        "pages": [
+          "05-practice/debug-setup",
+          "05-practice/add-endpoint",
+          "05-practice/swap-model",
+          "05-practice/troubleshooting"
         ]
       },
       {
         "group": "部署",
         "pages": [
-          "deployment/requirements",
-          "deployment/backend",
-          "deployment/frontend",
-          "deployment/services"
+          "06-deployment/local-development",
+          "06-deployment/production-notes"
+        ]
+      },
+      {
+        "group": "API参考",
+        "pages": [
+          "07-reference/api/authentication",
+          "07-reference/api/admin",
+          "07-reference/api/knowledge-base",
+          "07-reference/api/document",
+          "07-reference/api/chat",
+          "07-reference/api/streaming-query",
+          "07-reference/error-handling"
+        ]
+      },
+      {
+        "group": "参考",
+        "pages": [
+          "07-reference/configuration-reference",
+          "07-reference/directory-map",
+          "07-reference/glossary"
         ]
       },
       {
         "group": "安全",
         "pages": [
-          "security/auth-design",
-          "security/rag-safety",
-          "security/cors-config"
+          "08-security/auth-design",
+          "08-security/rag-safety",
+          "08-security/cors-config"
         ]
       }
     ]

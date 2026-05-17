@@ -1,0 +1,216 @@
+---
+title: Application 层
+description: 用例编排、摄入流程、失败处理
+---
+
+# 文档上传与摄入 —— Application 层
+
+## 入站端口
+
+文件：`synapse-kb-application/.../port/in/IngestDocumentUseCase.java`
+
+```java
+public interface IngestDocumentUseCase {
+    DocumentId ingest(IngestDocumentCommand command);
+
+    record IngestDocumentCommand(
+        KnowledgeBaseId knowledgeBaseId,
+        String fileName,
+        String contentType,
+        long fileSize,
+        String contentHash,
+        InputStream content
+    ) {}
+}
+```
+
+注意：`IngestDocumentCommand` 包含 `InputStream`，这是 I/O 类型。为什么放在 Application 层？
+
+因为 `InputStream` 是 Java 标准库的一部分，不是框架依赖。Application 层允许使用 Java 标准库的 I/O 类型。
+
+## ingest() 方法 —— 同步上传
+
+文件：`synapse-kb-application/.../port/service/KnowledgeBaseApplicationService.java`
+
+```java
+@Override
+public DocumentId ingest(IngestDocumentCommand command) {
+    // 1. 权限检查
+    KnowledgeBase kb = requireKnowledgeBase(command.knowledgeBaseId());
+    accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+
+    // 2. 重复内容检查
+    List<Document> existingDocs = documentRepository
+        .findByKnowledgeBaseIdAndContentHash(command.knowledgeBaseId(), command.contentHash());
+    for (Document existing : existingDocs) {
+        if (existing.getStatus() == PENDING || existing.getStatus() == PROCESSING
+                || existing.getStatus() == COMPLETED) {
+            throw new DomainException("此知识库已存在相同内容的文档");
+        }
+        if (existing.getStatus() == FAILED) {
+            // 清理失败残留后允许重新上传
+            cleanupFailedDocument(existing);
+        }
+    }
+
+    // 3. 创建文档
+    Document document = Document.create(
+        command.knowledgeBaseId(), command.fileName(),
+        command.contentType(), command.fileSize(), command.contentHash()
+    );
+
+    // 4. 存储原始内容到 GridFS
+    String contentObjectId = documentContentStorePort.store(
+        command.knowledgeBaseId(), document.getId(),
+        document.getFileName(), document.getFileType(), command.content()
+    );
+    document.attachContentObject(contentObjectId);
+
+    // 5. 保存文档（失败则回滚 GridFS）
+    try {
+        document = documentRepository.save(document);
+    } catch (RuntimeException e) {
+        documentContentStorePort.delete(contentObjectId);
+        throw e;
+    }
+
+    // 6. 创建摄入任务（失败则回滚文档和 GridFS）
+    try {
+        ingestionJobRepository.save(
+            IngestionJob.create(document.getId(), document.getKnowledgeBaseId(), contentObjectId)
+        );
+    } catch (RuntimeException e) {
+        documentRepository.deleteById(document.getId());
+        documentContentStorePort.delete(contentObjectId);
+        throw e;
+    }
+
+    return document.getId();
+}
+```
+
+### 补偿逻辑分析
+
+```
+存 GridFS → 存 Document → 存 IngestionJob
+     ↑___________↑___________↑
+     失败时回滚上一步
+```
+
+这是一个**链式补偿**：每步失败时回滚之前所有步骤。
+
+## processDocument() —— 异步处理
+
+```java
+private void processDocument(Document document, String contentObjectId) {
+    try {
+        if (document.getStatus() == PENDING) {
+            document.transitionTo(PROCESSING);
+            documentRepository.save(document);
+        }
+
+        // 1. 解析文档
+        List<DocumentChunk> chunks = parseDocumentChunks(document, contentObjectId);
+
+        // 2. 存储索引
+        storeDocumentIndexes(document, chunks);
+
+        document.setChunkCount(chunks.size());
+        document.transitionTo(COMPLETED);
+
+    } catch (Exception e) {
+        cleanupDocumentIndexesQuietly(document);
+        throw new DomainException("文档处理失败: " + safeFailureReason(e), e);
+    } finally {
+        documentRepository.save(document);
+    }
+}
+```
+
+### parseDocumentChunks()
+
+```java
+private List<DocumentChunk> parseDocumentChunks(Document document, String contentObjectId) {
+    InputStream content = documentContentStorePort.open(contentObjectId);
+    String text = documentParserPort.parse(content, document.getFileName());
+    List<DocumentChunk> chunks = recursiveChunkingStrategy.split(text);
+    if (chunks.isEmpty()) {
+        throw new DomainException("文档未解析出有效文本");
+    }
+    return chunks;
+}
+```
+
+### storeDocumentIndexes()
+
+```java
+private void storeDocumentIndexes(Document document, List<DocumentChunk> chunks) {
+    // 1. Embedding
+    List<float[]> embeddings = embeddingPort.embed(
+        chunks.stream().map(DocumentChunk::text).toList()
+    );
+
+    // 2. 向量存储（Milvus）
+    vectorStorePort.store(
+        document.getKnowledgeBaseId(), document.getId(),
+        document.getFileName(), chunks, embeddings
+    );
+
+    // 3. 关键词索引（MongoDB）
+    chunkSearchIndexPort.store(
+        document.getKnowledgeBaseId(), document.getId(),
+        document.getFileName(), chunks
+    );
+}
+```
+
+**双写索引**：向量索引和关键词索引必须同时成功。如果其中一个失败，`cleanupDocumentIndexesQuietly()` 会清理已写入的数据。
+
+## 失败处理
+
+```java
+private void handleIngestionFailure(IngestionJob job, Document document, Exception e) {
+    cleanupDocumentIndexesQuietly(document);
+
+    if (job.getAttempts() < maxAttempts) {
+        // 还有重试次数 → 标记为 RETRYING，设置退避时间
+        Duration backoff = Duration.ofSeconds(30 * (1L << job.getAttempts()));
+        job.markRetrying(safeFailureReason(e), Instant.now().plus(backoff));
+    } else {
+        // 重试次数用尽 → 标记为 FAILED
+        job.markFailed(safeFailureReason(e));
+        document.transitionTo(FAILED, safeFailureReason(e));
+    }
+    ingestionJobRepository.save(job);
+    documentRepository.save(document);
+}
+```
+
+**退避策略**：
+- 第1次失败后：30秒后重试
+- 第2次失败后：60秒后重试
+- 第3次失败后：120秒后重试
+
+指数退避避免频繁重试对系统造成压力。
+
+## 出站端口
+
+| 端口 | 职责 |
+|------|------|
+| `DocumentParserPort` | 解析文档为文本 |
+| `DocumentContentStorePort` | 存储/读取原始文件内容 |
+| `EmbeddingPort` | 文本向量化 |
+| `VectorStorePort` | 向量存储和检索 |
+| `ChunkSearchIndexPort` | 关键词索引存储和检索 |
+| `IngestionJobRepository` | 摄入任务仓储 |
+| `AccessControlPort` | 权限检查 |
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `ingest()` 方法的六步流程是什么？
+- [ ] 补偿逻辑在哪些步骤之间？
+- [ ] `processDocument()` 的处理流程是什么？
+- [ ] 双写索引失败时怎么处理？
+- [ ] 退避策略是什么？为什么用指数退避？

@@ -1,0 +1,77 @@
+---
+title: Domain 层
+description: Query、RagContext、ChunkReference 值对象
+---
+
+# 问答检索 —— Domain 层
+
+## Query —— 用户提问
+
+文件：`synapse-kb-domain/.../model/Query.java`
+
+```java
+public record Query(String text) {
+    public Query {
+        if (text == null || text.isBlank()) {
+            throw new DomainException("查询内容不能为空");
+        }
+    }
+}
+```
+
+`Query` 是一个简单的值对象，封装用户输入的问题文本。
+
+## RagContext —— RAG 上下文
+
+文件：`synapse-kb-domain/.../model/RagContext.java`
+
+```java
+public record RagContext(
+    String prompt,                    // 组装好的完整 prompt
+    List<ChunkReference> references,  // 引用来源列表
+    String sessionId,                 // 会话 ID
+    String knowledgeBaseId            // 知识库 ID
+) {}
+```
+
+`RagContext` 是 Application 层 `prepare()` 方法的返回值，包含：
+- 给 LLM 的完整 prompt
+- 检索到的引用来源（用于前端展示）
+- 会话和知识库标识
+
+## ChunkReference —— 引用来源
+
+文件：`synapse-kb-domain/.../model/ChunkReference.java`
+
+```java
+public record ChunkReference(
+    int sourceId,        // 引用编号 [1], [2]
+    String documentId,   // 文档 ID
+    String documentName, // 文档名称
+    String text,         // 片段文本
+    float score          // 相似度分数
+) {}
+```
+
+`sourceId` 有两个作用：
+1. 给 LLM 做引用标记，回答时可引用 `[1]` 表示来自第一个片段
+2. 给前端做来源展示，用户可点击序号查看原始文档位置
+
+## 为什么这些是值对象而不是实体？
+
+| 特征 | Query | RagContext | ChunkReference |
+|------|-------|-----------|----------------|
+| 有唯一标识吗？ | 否 | 否 | 否 |
+| 会修改吗？ | 否（record 不可变） | 否 | 否 |
+| 生命周期？ | 一次请求 | 一次请求 | 一次请求 |
+| 相等判断？ | 属性值相同即相等 | 属性值相同即相等 | 属性值相同即相等 |
+
+这些对象只存在一次请求的过程中，不需要跟踪身份，也不需要修改，所以用值对象（record）最合适。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `RagContext` 包含哪些信息？
+- [ ] `ChunkReference` 的 `sourceId` 有什么作用？
+- [ ] 为什么 Query、RagContext、ChunkReference 都是值对象？

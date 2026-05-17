@@ -1,0 +1,50 @@
+---
+title: 术语表
+description: DDD、RAG、Spring 术语速查
+---
+
+# 参考 —— 术语表
+
+## DDD 术语
+
+| 术语 | 英文 | 说明 |
+|------|------|------|
+| 领域驱动设计 | Domain-Driven Design | 以业务领域为核心组织代码的软件开发方法 |
+| 实体 | Entity | 有唯一标识、可变状态的对象 |
+| 值对象 | Value Object | 无标识、不可变、按内容相等的对象 |
+| 聚合根 | Aggregate Root | 一组相关对象的入口，外部只能通过它访问内部对象 |
+| 领域服务 | Domain Service | 不属于任何实体的业务逻辑 |
+| 仓储 | Repository | 聚合根的持久化抽象，只定义接口 |
+| 充血模型 | Rich Domain Model | 数据和行为封装在一起的模型 |
+| 贫血模型 | Anemic Domain Model | 只有 getter/setter 的数据容器 |
+| 有界上下文 | Bounded Context | 业务边界内的统一领域模型 |
+| 防腐层 | Anti-Corruption Layer | 隔离外部系统，防止外部模型污染内部领域 |
+
+## RAG 术语
+
+| 术语 | 英文 | 说明 |
+|------|------|------|
+| RAG | Retrieval-Augmented Generation | 检索增强生成，用外部知识库辅助 LLM 回答 |
+| Embedding | Embedding | 将文本转换为高维向量的过程 |
+| 向量检索 | Vector Search | 基于向量相似度查找相关内容 |
+| 关键词检索 | Keyword Search | 基于关键词匹配的文本检索 |
+| 混合检索 | Hybrid Retrieval | 向量检索 + 关键词检索融合 |
+| 分块 | Chunking | 将长文本切分为适合处理的小段 |
+| 提示词 | Prompt | 给 LLM 的输入文本 |
+| SSE | Server-Sent Events | 服务器向客户端推送事件的单向流协议 |
+| 召回 | Recall | 检索阶段，从库中找出候选内容 |
+| 重排 | Rerank | 对召回结果重新排序，选出最佳内容 |
+
+## Spring 术语
+
+| 术语 | 英文 | 说明 |
+|------|------|------|
+| WebFlux | Spring WebFlux | Spring 的响应式 Web 框架 |
+| Mono | Mono | Reactor 中异步返回 0 或 1 个值的类型 |
+| Flux | Flux | Reactor 中异步返回 0 到 N 个值的类型 |
+| 端口 | Port | 六边形架构中的接口，定义系统与外部交互的契约 |
+| 适配器 | Adapter | 端口的具体实现，连接外部技术 |
+| 入站端口 | Driving Port | 外部调用系统的接口（如 UseCase） |
+| 出站端口 | Driven Port | 系统调用外部的接口（如 SPI） |
+| Bean | Bean | Spring 管理的对象实例 |
+| 配置类 | @Configuration | 定义 Bean 的 Spring 配置类 |

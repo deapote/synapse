@@ -1,0 +1,132 @@
+---
+title: Adapter-In 层
+description: StreamingQueryController、SSE 流式输出、引用校验
+---
+
+# 问答检索 —— Adapter-In 层
+
+## StreamingQueryController
+
+文件：`synapse-kb-adapter/.../in/web/StreamingQueryController.java`
+
+```java
+@RestController
+public class StreamingQueryController {
+    private final QueryKnowledgeBaseUseCase queryUseCase;
+    private final StreamingLlmPort streamingLlmPort;
+
+    @PostMapping(value = "/api/knowledge-bases/{kbId}/query/stream",
+                 produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> streamQuery(
+            @PathVariable String kbId,
+            @RequestBody QueryRequest request) {
+
+        return Mono.fromCallable(() ->
+            queryUseCase.prepare(new Query(request.query()))
+        )
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMapMany(ragContext -> {
+            // 发送 session 事件
+            yield ServerSentEvent.<String>builder()
+                .event("session")
+                .data(toJson(Map.of("sessionId", ragContext.sessionId())))
+                .build();
+
+            // 流式生成
+            return streamWithLifecycle(ragContext);
+        });
+    }
+
+    private Flux<ServerSentEvent<String>> streamWithLifecycle(RagContext ragContext) {
+        return Flux.using(
+            () -> streamingLlmPort.generateStream(ragContext.prompt()),
+            tokenStream -> Flux.fromStream(tokenStream)
+                .map(token -> ServerSentEvent.<String>builder()
+                    .event("token")
+                    .data(toJson(Map.of("token", token)))
+                    .build()),
+            Stream::close  // 客户端断开时关闭 Stream
+        );
+    }
+}
+```
+
+### 关键点
+
+**`Flux.using()`**：绑定 Stream 的生命周期。当客户端断开连接时，自动调用 `Stream.close()`，取消 LLM 生成。
+
+**`Mono.fromCallable + subscribeOn(Schedulers.boundedElastic())`**：把同步的 `prepare()` 调用放到弹性线程池，避免阻塞 Netty 事件循环。
+
+### SSE 事件组装
+
+```java
+// 1. session 事件
+{event: "session", data: {"sessionId": "xxx"}}
+
+// 2. token 事件（逐字）
+{event: "token", data: {"token": "这"}}
+{event: "token", data: {"token": "个"}}
+
+// 3. references 事件
+{event: "references", data: {"references": [...]}}
+
+// 4. validation 事件
+{event: "validation", data: {"trusted": true, "usedSourceIds": [1, 2]}}
+
+// 5. complete 事件
+{event: "complete", data: {}}
+```
+
+### 引用校验
+
+```java
+private ValidationResult validateReferences(String answerText,
+                                             List<ChunkReference> references) {
+    Set<Integer> usedSourceIds = new HashSet<>();
+    Pattern pattern = Pattern.compile("\[(\d+)\]");
+    Matcher matcher = pattern.matcher(answerText);
+    while (matcher.find()) {
+        int sourceId = Integer.parseInt(matcher.group(1));
+        usedSourceIds.add(sourceId);
+    }
+
+    Set<Integer> validSourceIds = references.stream()
+        .map(ChunkReference::sourceId)
+        .collect(Collectors.toSet());
+
+    boolean trusted = validSourceIds.containsAll(usedSourceIds);
+    List<String> warnings = new ArrayList<>();
+    for (int usedId : usedSourceIds) {
+        if (!validSourceIds.contains(usedId)) {
+            warnings.add("引用 [" + usedId + "] 不存在于检索结果中");
+        }
+    }
+
+    return new ValidationResult(trusted, usedSourceIds, warnings);
+}
+```
+
+**引用校验的目的**：
+
+LLM 有时会" hallucinate"引用——编造不存在的来源编号。校验逻辑检查 LLM 回答中所有 `[N]` 格式的引用是否都存在于检索结果中。如果有不存在的引用，标记为 `trusted: false`。
+
+## 为什么用 SSE 而不是 WebSocket？
+
+| 特性 | SSE | WebSocket |
+|------|-----|-----------|
+| 方向 | 单向（服务器 → 客户端） | 双向 |
+| 协议 | 基于 HTTP | 独立协议 |
+| 复杂度 | 简单 | 需要握手、心跳 |
+| 适用场景 | 服务器推送流式数据 | 实时双向通信 |
+
+SSE 足够满足"服务器推送流式文本"的需求，比 WebSocket 更轻量。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `Flux.using()` 的作用是什么？
+- [ ] 为什么用 `Mono.fromCallable + subscribeOn()` 包装 `prepare()`？
+- [ ] SSE 的事件类型有哪些？
+- [ ] 引用校验检查什么？
+- [ ] 为什么选 SSE 而不是 WebSocket？

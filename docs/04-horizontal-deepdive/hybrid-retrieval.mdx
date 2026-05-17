@@ -1,0 +1,165 @@
+---
+title: 混合检索与融合重排
+description: 向量召回 + 关键词召回的互补性，加权融合算法解析
+---
+
+# 横向深入 —— 混合检索与融合重排
+
+Synapse 的问答检索不是单一方式，而是**向量召回 + 关键词召回并行执行，结果融合后重排**。本章深入讲解这个设计的原理和实现。
+
+## 为什么单一检索不够
+
+### 向量检索的局限
+
+- **优势**：理解语义，"GPU 和显卡"能匹配到
+- **劣势**：对精确词匹配弱，稀有术语（产品型号、人名）容易漏
+
+### 关键词检索的局限
+
+- **优势**：精确匹配，产品型号、代码片段找得准
+- **劣势**：不理解同义词，"电脑"搜不到"计算机"
+
+### 互补性
+
+| 查询类型 | 向量检索 | 关键词检索 |
+|---------|---------|-----------|
+| "GPU 温度过高怎么办" | 强 | 中 |
+| "RTX 4090 驱动版本 552.22" | 弱 | 强 |
+| "系统崩溃了怎么排查" | 强 | 中 |
+| "错误码 0x80070005" | 弱 | 强 |
+
+两者结合，覆盖更多场景。
+
+## 实现 —— CompletableFuture 并行
+
+```java
+private List<ChunkReference> retrieveReferences(Query query, PreparedQuery preparedQuery) {
+    CompletableFuture<List<ChunkReference>> vectorFuture = CompletableFuture.supplyAsync(
+        () -> vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK),
+        retrievalExecutor
+    );
+    CompletableFuture<List<ChunkReference>> keywordFuture = CompletableFuture.supplyAsync(
+        () -> chunkSearchIndexPort.search(query.knowledgeBaseId(), preparedQuery.effectiveText(), keywordCandidateK),
+        retrievalExecutor
+    );
+    return mergeAndRerank(await(vectorFuture), await(keywordFuture));
+}
+```
+
+**关键点**：
+- 两个检索**并行**执行，`retrievalExecutor` 是虚拟线程池
+- `vectorCandidateK` 和 `keywordCandidateK` 是候选集大小（默认各 50）
+- `await()` 等待两个 Future 都完成，任一失败会抛异常
+
+## 融合重排算法 —— 加权排序
+
+```java
+private List<ChunkReference> mergeAndRerank(
+        List<ChunkReference> vectorResults,
+        List<ChunkReference> keywordResults) {
+
+    Map<String, RankedReference> merged = new LinkedHashMap<>();
+
+    // 第一轮：放入向量结果，记录 vectorScore
+    for (ChunkReference ref : vectorResults) {
+        merged.computeIfAbsent(referenceKey(ref), k -> new RankedReference(ref))
+              .vectorScore = ref.score();
+    }
+
+    // 第二轮：放入关键词结果，记录 keywordScore
+    for (ChunkReference ref : keywordResults) {
+        merged.computeIfAbsent(referenceKey(ref), k -> new RankedReference(ref))
+              .keywordScore = ref.score();
+    }
+
+    // 加权融合 → 排序 → 取 TopK
+    return merged.values().stream()
+        .map(this::toFinalReference)
+        .sorted(Comparator.comparing(ChunkReference::score).reversed())
+        .limit(topK)
+        .toList();
+}
+```
+
+### 唯一键 —— documentId + chunkIndex
+
+```java
+private String referenceKey(ChunkReference reference) {
+    return reference.documentId() + ":" + reference.chunkIndex();
+}
+```
+
+同一个文档的同一段内容，可能同时被向量检索和关键词检索命中，需要合并。
+
+### 加权公式
+
+```java
+private ChunkReference toFinalReference(RankedReference ranked) {
+    float score = (float) Math.min(1.0,
+        vectorWeight * ranked.vectorScore + keywordWeight * ranked.keywordScore);
+    return new ChunkReference(..., score, ...);
+}
+```
+
+默认配置：
+- `vectorWeight = 0.65`
+- `keywordWeight = 0.35`
+
+为什么向量权重更高？
+- 向量检索的语义理解能力更贴近"用户真实意图"
+- 关键词检索作为补充，提升精确术语的召回
+
+### 权重归一化
+
+构造函数里的安全处理：
+
+```java
+double safeVectorWeight = Math.max(0, vectorWeight);
+double safeKeywordWeight = Math.max(0, keywordWeight);
+double totalWeight = safeVectorWeight + safeKeywordWeight;
+if (totalWeight == 0) {
+    safeVectorWeight = 1;
+    totalWeight = 1;
+}
+this.vectorWeight = safeVectorWeight / totalWeight;
+this.keywordWeight = safeKeywordWeight / totalWeight;
+```
+
+即使配置写错了（如 `vectorWeight=0, keywordWeight=0`），也会自动归一化为 `1.0` 和 `0.0`，不会除以零。
+
+## 为什么不是 RRF（Reciprocal Rank Fusion）
+
+业界常用的另一种融合算法是 **RRF**：
+
+```
+RRF score = 1 / (k + rank_vector) + 1 / (k + rank_keyword)
+```
+
+RRF 的优点是不依赖原始分数的绝对值，只用排名。但 Synapse 没有用它，原因：
+
+1. **Milvus 和 BM25 的分数都在 [0, 1] 区间**，可以直接加权
+2. **RRF 对参数 k 敏感**，需要调参
+3. **加权融合更直观**，开发者一眼看懂 `0.65 * vector + 0.35 * keyword`
+
+如果未来接入外部搜索引擎（分数范围不一致），可以考虑切换到 RRF。
+
+## 知识库隔离 —— 所有召回都带 knowledgeBaseId
+
+```java
+vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK);
+chunkSearchIndexPort.search(query.knowledgeBaseId(), preparedQuery.effectiveText(), keywordCandidateK);
+```
+
+这是安全红线：**禁止跨知识库检索**。即使两个知识库有相同内容，也绝不能互相泄露。
+
+Milvus 的 collection 里用 `knowledgeBaseId` 作为 partition key，MongoDB 的 chunk_index 集合用 `knowledgeBaseId` 作为查询条件。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] 向量检索和关键词检索各自的优势和劣势是什么？
+- [ ] `CompletableFuture.supplyAsync()` 在这里的作用是什么？
+- [ ] 同一个 chunk 被两种检索都命中时，怎么合并分数？
+- [ ] 为什么向量权重默认 0.65、关键词权重 0.35？
+- [ ] 为什么不用 RRF 而用加权融合？

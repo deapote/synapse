@@ -1,6 +1,8 @@
 # Synapse 文档
 
-这是 Synapse 知识库 RAG 系统的官方文档站点，基于 [Mintlify](https://mintlify.com) 构建。
+这是 Synapse 知识库 RAG 系统的教育型文档站点，基于 [Mintlify](https://mintlify.com) 构建。
+
+文档面向"会用 Spring Boot 写 CRUD 的 Java 学习者"，通过纵向切片的学习路径，从 HTTP 请求到数据库逐层拆解每个功能。
 
 ## 本地预览
 
@@ -27,10 +29,12 @@ mint dev
 
 ## 文档结构
 
-- `introduction/` — 项目介绍、快速开始、技术栈
-- `guides/` — 使用指南（面向最终用户）
-- `core-concepts/` — 核心概念（面向开发者）
-- `developer-guide/` — 开发者指南
-- `api-reference/` — API 接口参考
-- `deployment/` — 部署文档
-- `security/` — 安全设计
+- `00-overview/` — 项目概览、技术栈、架构鸟瞰
+- `01-getting-started/` — 快速上手、首次使用指南
+- `02-core-concepts/` — 核心概念铺垫（RAG、向量检索、DDD、分层架构、状态机）
+- `03-vertical-slices/` — 纵向切片（认证 → 文档摄入 → 问答检索 → 聊天记忆）
+- `04-horizontal-deepdive/` — 横向深入（设计模式、端口设计、Reactive 桥接、混合检索、分块算法、前端架构）
+- `05-practice/` — 动手实践（调试、添加字段、更换模型、问题排查）
+- `06-deployment/` — 部署文档
+- `07-reference/` — API 参考、配置参考、目录速查、术语表
+- `08-security/` — 安全设计

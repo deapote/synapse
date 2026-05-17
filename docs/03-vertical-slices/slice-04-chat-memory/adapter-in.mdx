@@ -1,0 +1,69 @@
+---
+title: Adapter-In 层
+description: ChatController、会话管理 API
+---
+
+# 聊天记忆 —— Adapter-In 层
+
+## ChatController
+
+文件：`synapse-kb-adapter/.../in/web/ChatController.java`
+
+```java
+@RestController
+public class ChatController {
+    private final ChatSessionRepository chatSessionRepository;
+    private final ChatMessageRepository chatMessageRepository;
+
+    @GetMapping("/api/knowledge-bases/{kbId}/chat/sessions/current")
+    public Mono<ChatSessionResponse> getCurrentSession(@PathVariable String kbId) {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            String userId = accessControlPort.currentUserId();
+            ChatSession session = chatSessionRepository
+                .findLatestByOwnerUserIdAndKnowledgeBaseId(userId, new KnowledgeBaseId(kbId))
+                .orElseGet(() -> chatSessionRepository.save(
+                    ChatSession.create(userId, new KnowledgeBaseId(kbId))
+                ));
+            return toResponse(session);
+        });
+    }
+
+    @PostMapping("/api/knowledge-bases/{kbId}/chat/sessions")
+    public Mono<ChatSessionResponse> createSession(@PathVariable String kbId) {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            String userId = accessControlPort.currentUserId();
+            ChatSession session = chatSessionRepository.save(
+                ChatSession.create(userId, new KnowledgeBaseId(kbId))
+            );
+            return toResponse(session);
+        });
+    }
+
+    @GetMapping("/api/chat/sessions/{sessionId}/messages")
+    public Mono<List<ChatMessageResponse>> getMessages(
+            @PathVariable String sessionId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            List<ChatMessage> messages = chatMessageRepository
+                .findBySessionId(new ChatSessionId(sessionId), page, size);
+            return messages.stream().map(this::toResponse).toList();
+        });
+    }
+}
+```
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/knowledge-bases/{kbId}/chat/sessions/current` | 获取当前会话（不存在则创建） |
+| POST | `/api/knowledge-bases/{kbId}/chat/sessions` | 创建新会话 |
+| GET | `/api/chat/sessions/{sessionId}/messages` | 获取会话消息列表 |
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] 获取当前会话时，如果不存在会怎样？
+- [ ] 消息列表支持分页吗？

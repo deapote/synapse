@@ -1,0 +1,97 @@
+---
+title: 鉴权设计
+description: Sa-Token RBAC、知识库归属校验、聊天记忆隔离
+---
+
+# 安全 —— 鉴权设计
+
+## Sa-Token Reactor
+
+Synapse 使用 **Sa-Token Reactor** 处理 WebFlux 环境下的登录态：
+
+- 除 `/api/auth/login` 外，所有 `/api/**` 都必须登录
+- Token 通过 HTTP Header 传递，默认 header 名为 `satoken`
+- 角色权限通过 `SaTokenPermissionAdapter` 从 MongoDB 动态读取
+
+### 为什么选 Sa-Token 而不是 Spring Security
+
+| 对比项 | Sa-Token | Spring Security |
+|--------|----------|-----------------|
+| 学习曲线 | 低，API 简洁 | 高，概念多 |
+| WebFlux 支持 | 原生支持 Reactor | 需要额外适配 |
+| 代码量 | 几行配置即可 | 需要写大量配置类 |
+| 功能覆盖 | 登录、权限、踢人、分布式会话 | 全面但复杂 |
+
+对于"会用 Spring Boot 写 CRUD"的学习者，Sa-Token 更容易理解和控制。
+
+## RBAC 模型
+
+```
+用户 (UserAccount)
+  └── 角色 (RoleName: ADMIN / USER)
+        └── 权限 (AuthPermission: KB_READ, KB_WRITE, KB_DELETE, AUTH_ADMIN)
+```
+
+- **ADMIN**：拥有全部权限，可跨用户访问知识库
+- **USER**：默认拥有 `KB_READ`、`KB_WRITE`，只能访问自己的知识库
+
+## 管理接口保护
+
+所有 `/api/admin/**` 接口统一校验 `AUTH_ADMIN`：
+
+```java
+private <T> Mono<T> adminCall(CheckedSupplier<T> supplier) {
+    return SaTokenReactorBridge.blockingCall(() -> {
+        StpUtil.checkPermission("AUTH_ADMIN");  // 权限不足直接抛异常
+        return supplier.get();
+    });
+}
+```
+
+## 知识库归属校验
+
+KB/文档/问答接口同时校验**权限**和**归属**：
+
+```java
+// Application Service 中的标准校验流程
+KnowledgeBase kb = requireKnowledgeBase(knowledgeBaseId);
+accessControlPort.checkKnowledgeBaseAccess(kb, "KB_READ");
+```
+
+`checkKnowledgeBaseAccess` 内部逻辑：
+1. 校验用户有 `KB_READ` 权限
+2. 如果不是 ADMIN，校验知识库的 `ownerUserId` 等于当前用户 ID
+
+## 聊天记忆隔离
+
+聊天记忆按 `ownerUserId + knowledgeBaseId` 隔离：
+
+- 用户只能读取自己的会话消息
+- **即使 ADMIN 也不能读取其他用户的聊天历史**——这是隐私红线
+- `ChatController` 中每个会话查询都校验 `ownerUserId`
+
+```java
+private ChatSession requireSessionForOwner(ChatSessionId sessionId, String ownerUserId) {
+    ChatSession session = chatSessionRepository.findById(sessionId)
+        .orElseThrow(() -> new DomainException("未找到聊天会话"));
+    if (!ownerUserId.equals(session.getOwnerUserId())) {
+        throw new DomainException("无权访问该聊天会话");
+    }
+    return session;
+}
+```
+
+## 密码安全
+
+- 密码只存 **BCrypt 哈希**，不保存明文
+- 默认管理员密码仅用于开发，启动时日志打印安全告警
+- 生产环境必须通过配置覆盖默认密码
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] 为什么选 Sa-Token 而不是 Spring Security？
+- [ ] ADMIN 和 USER 的权限差异是什么？
+- [ ] 知识库接口做了哪两层校验？
+- [ ] 为什么 ADMIN 也不能读取其他用户的聊天历史？

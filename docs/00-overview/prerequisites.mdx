@@ -1,0 +1,97 @@
+---
+title: 前置知识
+description: 学习本项目之前，你需要掌握什么
+---
+
+# 前置知识
+
+这个文档假设你已经**会用 Spring Boot 写 CRUD**。具体来说：
+
+## 必须具备
+
+| 知识 | 到什么程度就够了 | 在本项目哪里会用到 |
+|------|-----------------|-------------------|
+| Java 基础 | 熟悉类、接口、泛型、Stream API |  everywhere |
+| Spring Boot | 写过 Controller + Service + Repository 的 CRUD | 所有后端代码 |
+| Maven | 会添加依赖、执行 `mvn spring-boot:run` | 构建项目 |
+| HTTP / REST | 知道 GET/POST/DELETE、状态码、JSON | API 设计 |
+| Git | 会 clone、commit、push | 获取源码 |
+
+## 建议了解（不是必须）
+
+| 知识 | 为什么建议了解 | 如果不懂会怎样 |
+|------|---------------|---------------|
+| MongoDB 基础 | 本项目用 MongoDB 存元数据 | 不影响学习，但理解数据模型会慢一点 |
+| Vue 3 基础 | 前端用 Vue 3 + Composition API | 可以只看后端部分 |
+| Docker 基础 | 用来启动 MongoDB 和 Milvus | 我们提供了 docker run 命令，复制粘贴即可 |
+
+## 不需要预先了解（文档会教）
+
+以下概念**不需要**你提前学习。文档会在遇到它们时从零开始讲解：
+
+- **RAG / 向量检索**：第二章核心概念会讲
+- **DDD / 六边形架构**：第二章核心概念会讲
+- **Spring WebFlux / Mono / Flux**：切片里遇到时讲
+- **Sa-Token**：切片里遇到时讲
+- **LangChain4j**：切片里遇到时讲
+- **Milvus**：切片里遇到时讲
+- **SSE（Server-Sent Events）**：切片里遇到时讲
+
+## 推荐的外部资源
+
+如果你在以下方面有短板，可以先补一补：
+
+### Spring Boot 基础
+
+- [Spring Boot 官方文档](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/)（英文）
+- 任何中文 Spring Boot 入门教程都可以
+
+### Java Stream API
+
+Stream API 在本项目中大量使用（`stream().map().filter().toList()`）。如果你不熟悉，花 30 分钟看一下：
+
+- [Java 8 Stream 教程](https://www.baeldung.com/java-8-streams)（英文）
+
+### MongoDB 基础概念
+
+只需要了解三个概念：
+- **Document**：MongoDB 中的一条记录（类似 JSON 对象）
+- **Collection**：一组 Document（类似关系型数据库的表）
+- **Index**：加速查询的数据结构
+
+### Vue 3 基础（如果你要看前端代码）
+
+- [Vue 3 官方文档](https://vuejs.org/guide/introduction.html)（英文，有中文选项）
+- 了解 `<script setup>`、 reactive ref、computed
+
+## 如果不懂这些，哪里会卡住
+
+| 缺失知识 | 会在哪里卡住 |
+|---------|-------------|
+| 不会 Spring Boot CRUD | 从第一批文档开始就完全看不懂 |
+| 不懂接口（interface） | 无法理解"端口"的概念 |
+| 不懂泛型 | 看不懂 `Optional<UserAccount>`、`Mono<LoginResponse>` |
+| 不会 Stream API | 代码里的 `stream().map().collect()` 一脸懵 |
+| 不懂 Maven | 无法编译和运行项目 |
+
+<Warning>
+  如果你还没用 Spring Boot 写过完整的增删改查，建议先找一个 Spring Boot 入门教程，亲手写一个 Todo 应用，再回来学习这个项目。否则你会在基础概念上花费太多时间，无法专注于项目要教的核心技术（RAG、DDD、Reactive）。
+</Warning>
+
+## 学习时间的预期
+
+| 阶段 | 内容 | 预计时间 |
+|------|------|---------|
+| 快速上手 | 跑起来 + 当用户用一遍 | 1 小时 |
+| 核心概念 | 5 个概念铺垫 | 2 小时 |
+| 纵向切片 | 4 个切片，每个 3-4 小时 | 14 小时 |
+| 横向深入 | 6 个主题深入 | 4 小时 |
+| 动手实践 | 调试 + 添加功能 | 2 小时 |
+| API / 参考 | 速查 | 1 小时 |
+| **总计** | | **~24 小时** |
+
+这是**专注阅读 + 跟着代码看**的时间。如果只是浏览，会快很多；如果想动手改代码验证，会更久。
+
+<Tip>
+  不要试图一次性读完所有内容。每天花 1-2 小时读一个切片，跟着代码在 IDE 里看，效果更好。这个项目信息量很大，细嚼慢咽比狼吞虎咽更能消化。
+</Tip>

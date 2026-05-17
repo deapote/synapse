@@ -1,0 +1,180 @@
+---
+title: 端口设计模式
+description: Driving Port、Driven Port 的命名规范与设计意图
+---
+
+# 横向深入 —— 端口设计模式
+
+端口（Port）是六边形架构的核心概念。学完四个切片后，你会发现端口的命名和位置有严格规律。
+
+## 两种端口
+
+```
+           Driving Port (入站)              Driven Port (出站/SPI)
+           ───────────────────              ──────────────────────
+
+   外部调用方 ──→ Application 层 ──→ 端口接口 ──→ Adapter 实现 ──→ 外部服务
+   (Controller)     (UseCase)         (Port)       (Adapter)      (Mongo/Ollama)
+```
+
+| 类型 | 命名 | 包位置 | 谁实现 | 谁调用 |
+|------|------|--------|--------|--------|
+| Driving Port | `*UseCase` | `port/in/` | Application Service | Controller / Worker |
+| Driven Port | `*Port` | `port/out/` | Adapter | Application Service |
+
+## 项目中的端口清单
+
+### Auth Context
+
+**入站端口（Driving）**：
+- `AuthenticationUseCase` —— 登录、登出、当前用户
+- `UserAdminUseCase` —— 用户/角色的增删改查
+
+**出站端口（Driven）**：
+- `LoginSessionPort` —— 会话管理抽象
+- `PasswordHasherPort` —— 密码哈希抽象
+
+### KB Context
+
+**入站端口（Driving）**：
+- `CreateKnowledgeBaseUseCase`、`DeleteKnowledgeBaseUseCase`、`ListKnowledgeBaseUseCase`
+- `IngestDocumentUseCase`、`ListDocumentUseCase`、`DeleteDocumentUseCase`、`RetryDocumentIngestionUseCase`
+- `ProcessIngestionJobUseCase`
+- `QueryKnowledgeBaseUseCase`
+- `GetCurrentChatSessionUseCase`、`CreateChatSessionUseCase`、`ListChatMessagesUseCase`
+
+**出站端口（Driven）**：
+- `VectorStorePort` —— 向量存储（Milvus）
+- `ChunkSearchIndexPort` —— 关键词索引（MongoDB）
+- `EmbeddingPort` —— 向量化（Ollama）
+- `DocumentParserPort` —— 文档解析（Tika）
+- `DocumentContentStorePort` —— 原始内容存储（GridFS）
+- `QueryRewritePort` —— Query 改写（Ollama）
+- `StreamingLlmPort` —— 流式生成（Ollama）
+- `ChatMemorySummarizerPort` —— 聊天摘要（Ollama）
+- `AccessControlPort` —— 权限检查（Sa-Token，跨上下文 ACL）
+
+## 为什么用接口隔离
+
+### 1. 测试时可 Mock
+
+```java
+@Test
+void shouldRejectDuplicateContent() {
+    // 不需要真的连 MongoDB，mock Repository 即可
+    DocumentRepository mockRepo = mock(DocumentRepository.class);
+    when(mockRepo.findByKnowledgeBaseIdAndContentHash(any(), any()))
+        .thenReturn(List.of(existingDoc));
+
+    KnowledgeBaseApplicationService service = new KnowledgeBaseApplicationService(
+        mockRepo, ...  // 其他端口也 mock
+    );
+
+    assertThrows(DomainException.class, () -> service.ingest(command));
+}
+```
+
+### 2. 实现可替换
+
+今天用 Ollama 做 Embedding，明天可以换成 OpenAI，只需要：
+1. 新建 `OpenAiEmbeddingAdapter implements EmbeddingPort`
+2. 修改 Config 层的 Bean 装配
+
+Application Service 一行代码不用改。
+
+### 3. 依赖方向可控
+
+```
+Domain / Application 层只 import 端口接口
+    ↓
+完全不依赖 Spring、MongoDB、LangChain4j
+    ↓
+技术栈变更时，上层代码不受影响
+```
+
+## 端口粒度 —— 一个场景一个接口
+
+不要搞"大接口"：
+
+```java
+// 错误做法——所有操作塞在一个接口里
+public interface KnowledgeBasePort {
+    void createKB(...);
+    void deleteKB(...);
+    void ingestDoc(...);
+    List<ChunkReference> search(...);
+    // ... 30 个方法
+}
+```
+
+正确做法——按**用例**拆分：
+
+```java
+public interface CreateKnowledgeBaseUseCase {
+    KnowledgeBaseId create(CreateKnowledgeBaseCommand command);
+}
+
+public interface IngestDocumentUseCase {
+    DocumentId ingest(IngestDocumentCommand command);
+}
+
+public interface QueryKnowledgeBaseUseCase {
+    RagContext prepare(Query query);
+    void complete(RagContext ragContext, String answerText);
+}
+```
+
+每个接口只负责一个**完整的用户场景**，调用方（Controller）按需依赖，不用被迫了解无关方法。
+
+## Application Service 实现多个 UseCase
+
+```java
+public class KnowledgeBaseApplicationService implements
+        CreateKnowledgeBaseUseCase,
+        DeleteKnowledgeBaseUseCase,
+        IngestDocumentUseCase,
+        QueryKnowledgeBaseUseCase,
+        ... {
+    // 一个类实现所有 KB 相关的入站端口
+}
+```
+
+这是项目中常见的模式：一个 Application Service 实现某个 bounded context 的所有 Driving Port。好处：
+- 端口粒度细（按用例），类粒度粗（按上下文）
+- 避免类爆炸（如果每个 UseCase 一个类，会有 20+ 个 Service 类）
+- 共享私有方法（如 `requireKnowledgeBase()`、`safeFailureReason()`）
+
+## AccessControlPort —— 跨上下文 ACL
+
+`kb-application` 不允许直接依赖 `auth-adapter`（违反依赖方向）。但它需要鉴权能力，怎么办？
+
+```java
+// kb-application 定义端口
+public interface AccessControlPort {
+    String currentUserId();
+    boolean isAdmin();
+    void checkPermission(String permission);
+    void checkKnowledgeBaseAccess(KnowledgeBase knowledgeBase, String permission);
+}
+```
+
+```java
+// auth-adapter 实现端口（在 auth 上下文里）
+@Component
+public class SaTokenAccessControlAdapter implements AccessControlPort {
+    // 内部调用 StpUtil
+}
+```
+
+Config 层把 `SaTokenAccessControlAdapter` 注入给 `KnowledgeBaseApplicationService`。
+
+这就是**防腐层（Anti-Corruption Layer, ACL）**模式：KB 上下文用自己的语言定义"我需要什么权限能力"，不关心 Sa-Token 的具体 API。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] Driving Port 和 Driven Port 的命名区别是什么？
+- [ ] 如果要更换 LLM 提供商，需要改哪些文件？
+- [ ] 为什么 `KnowledgeBaseApplicationService` 要实现那么多接口？
+- [ ] `AccessControlPort` 为什么定义在 `kb-application` 而不是 `auth-application`？

@@ -1,0 +1,206 @@
+---
+title: Adapter-In 层
+description: Controller、DTO、SaTokenReactorBridge
+---
+
+# 认证登录 —— Adapter-In 层
+
+Adapter-In 层负责接收外部请求（HTTP），把请求参数转成 Application 层能理解的命令，然后把 Application 层的结果转成外部能理解的响应。
+
+## AuthController
+
+文件：`synapse-auth-adapter/.../in/web/AuthController.java`
+
+```java
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+    private final AuthenticationUseCase authenticationUseCase;
+
+    // 构造函数注入
+    public AuthController(AuthenticationUseCase authenticationUseCase) {
+        this.authenticationUseCase = authenticationUseCase;
+    }
+
+    @PostMapping("/login")
+    public Mono<LoginResponse> login(@RequestBody LoginRequest request) {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            AuthenticationUseCase.LoginResult result = authenticationUseCase.login(
+                new AuthenticationUseCase.LoginCommand(request.username(), request.password()));
+            return new LoginResponse(
+                result.userId(), result.username(), result.displayName(),
+                result.roles(), result.permissions(),
+                StpUtil.getTokenName(), StpUtil.getTokenValue()
+            );
+        });
+    }
+
+    @PostMapping("/logout")
+    public Mono<Void> logout() {
+        return SaTokenReactorBridge.blockingAction(authenticationUseCase::logout);
+    }
+
+    @GetMapping("/me")
+    public Mono<UserResponse> me() {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            AuthenticationUseCase.CurrentUser user = authenticationUseCase.currentUser();
+            return new UserResponse(
+                user.id().value(), user.username(), user.displayName(),
+                user.roles(), user.permissions(), true, user.createdAt()
+            );
+        });
+    }
+}
+```
+
+### 关键点
+
+**`@RestController`**：Spring 的 REST 控制器注解，自动把返回值序列化成 JSON。
+
+**`Mono<T>`**：WebFlux 的响应式类型，表示"异步的单个结果"。 login() 返回 `Mono<LoginResponse>`，表示这个响应不是立即产生的，而是在某个时刻异步完成。
+
+**`@RequestBody`**：自动把请求体的 JSON 转成 Java 对象。
+
+**`SaTokenReactorBridge.blockingCall()`**：这是最关键的桥接代码。
+
+### 为什么需要 SaTokenReactorBridge？
+
+Sa-Token 的 `StpUtil` 是同步 API，它内部使用 `ThreadLocal` 存储上下文。但 WebFlux 的 Netty 事件循环线程不能阻塞，而且线程会切换。
+
+```java
+// 错误的写法：直接在 Netty 线程上执行同步代码
+@PostMapping("/login")
+public LoginResponse login(@RequestBody LoginRequest request) {
+    // 这里阻塞了 Netty 线程！其他请求无法处理！
+    return authenticationUseCase.login(...);
+}
+```
+
+正确的做法是：把同步调用放到弹性线程池中执行：
+
+```java
+// 正确的写法：放到弹性线程池
+static <T> Mono<T> blockingCall(CheckedSupplier<T> supplier) {
+    return SaReactorHolder.sync(() -> supplier.get())
+            .subscribeOn(Schedulers.boundedElastic());
+}
+```
+
+`Schedulers.boundedElastic()` 是一个有上限的弹性线程池，专门用于执行阻塞操作。这样 Netty 事件循环线程不会被阻塞，可以继续处理其他请求。
+
+## UserAdminController
+
+文件：`synapse-auth-adapter/.../in/web/UserAdminController.java`
+
+```java
+@RestController
+@RequestMapping("/api/admin")
+public class UserAdminController {
+    private final UserAdminUseCase userAdminUseCase;
+    private final int maxPageSize;
+
+    public UserAdminController(UserAdminUseCase userAdminUseCase,
+                               @Value("${synapse.web.max-page-size:100}") int maxPageSize) {
+        this.userAdminUseCase = userAdminUseCase;
+        this.maxPageSize = maxPageSize;
+    }
+
+    @PostMapping("/users")
+    public Mono<UserAdminUseCase.UserView> createUser(@RequestBody CreateUserRequest request) {
+        return adminCall(() -> userAdminUseCase.createUser(
+            new UserAdminUseCase.CreateUserCommand(
+                request.username(), request.displayName(), request.password(), request.roles())));
+    }
+
+    @GetMapping("/users")
+    public Mono<List<UserAdminUseCase.UserView>> listUsers(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return adminCall(() -> {
+            validatePage(page, size);
+            return userAdminUseCase.listUsers(page, size);
+        });
+    }
+
+    @PutMapping("/users/{id}/roles")
+    public Mono<UserAdminUseCase.UserView> assignRoles(
+            @PathVariable String id,
+            @RequestBody AssignRolesRequest request) {
+        return adminCall(() -> userAdminUseCase.assignRoles(id, request.roles()));
+    }
+
+    // adminCall 封装了权限检查
+    private <T> Mono<T> adminCall(CheckedSupplier<T> supplier) {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            StpUtil.checkPermission("AUTH_ADMIN");  // 检查 ADMIN 权限
+            return supplier.get();
+        });
+    }
+
+    private void validatePage(int page, int size) {
+        if (page < 0 || size < 1 || size > maxPageSize) {
+            throw new DomainException("分页参数非法");
+        }
+    }
+}
+```
+
+### 权限检查在哪里发生？
+
+Controller 有两个层面的权限控制：
+
+1. **路由层面的登录拦截**：`SaTokenSecurityConfig` 配置的 `SaReactorFilter` 拦截所有 `/api/**` 请求，检查是否登录
+2. **方法层面的权限检查**：`adminCall()` 里的 `StpUtil.checkPermission("AUTH_ADMIN")` 检查具体权限
+
+为什么要分两层？因为不是所有 `/api/**` 请求都需要 `AUTH_ADMIN`，只有管理接口需要。
+
+## DTO 类
+
+文件：`synapse-auth-adapter/.../in/web/dto/`
+
+```java
+// 登录请求
+public record LoginRequest(String username, String password) {}
+
+// 登录响应
+public record LoginResponse(
+    String userId, String username, String displayName,
+    Set<RoleName> roles, Set<AuthPermission> permissions,
+    String tokenName, String tokenValue
+) {}
+
+// 当前用户信息
+public record UserResponse(
+    String id, String username, String displayName,
+    Set<RoleName> roles, Set<AuthPermission> permissions,
+    boolean enabled, Instant createdAt
+) {}
+
+// 创建用户请求
+public record CreateUserRequest(
+    String username, String displayName, String password, Set<RoleName> roles
+) {}
+
+// 分配角色请求
+public record AssignRolesRequest(Set<RoleName> roles) {}
+```
+
+**DTO 和 Application 层 record 的区别：**
+
+| | DTO (Adapter-In) | Command/View (Application) |
+|---|-----------------|---------------------------|
+| 所在层 | Adapter | Application |
+| 来源 | HTTP 请求 JSON | 业务概念 |
+| 转换 | JSON → DTO → Command | Command → 领域对象 → View |
+
+Controller 负责 DTO 和 Command/View 之间的转换。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `Mono<T>` 是什么意思？
+- [ ] 为什么需要 `SaTokenReactorBridge`？
+- [ ] `adminCall()` 封装了什么？
+- [ ] 路由层面和方法层面的权限检查分别在哪里？
+- [ ] DTO 和 Application 层的 Command 有什么区别？

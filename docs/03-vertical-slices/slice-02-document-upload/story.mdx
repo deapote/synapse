@@ -1,0 +1,80 @@
+---
+title: 用户故事
+description: 文档上传与摄入要解决什么问题，涉及哪些角色
+---
+
+# 切片2：文档上传与摄入 —— 用户故事
+
+## 场景
+
+用户在知识库详情页点击"上传文档"，选择一个 PDF 文件。系统需要在后台把这个 PDF 变成可检索的知识：解析文本、切分成小块、向量化、存入向量数据库和关键词索引。
+
+## 涉及的角色
+
+| 角色 | 职责 |
+|------|------|
+| **用户** | 选择文件并上传 |
+| **浏览器** | 发送 multipart 请求，轮询状态 |
+| **DocumentController** | 接收上传请求，校验文件 |
+| **KnowledgeBaseApplicationService** | 编排摄入流程 |
+| **Document** (Domain) | 封装文档状态和状态机 |
+| **IngestionJob** (Domain) | 封装后台任务和租约 |
+| **IngestionJobWorker** | 定时轮询，执行后台处理 |
+| **ApacheTikaDocumentParserAdapter** | 解析各种文档格式 |
+| **RecursiveChunkingStrategy** | 把文本切分成语义块 |
+| **OllamaEmbeddingAdapter** | 把文本块变成向量 |
+| **MilvusVectorStoreAdapter** | 存储向量，支持相似度检索 |
+| **MongoChunkSearchIndexAdapter** | 存储关键词倒排索引 |
+| **GridFsDocumentContentStoreAdapter** | 存储原始文件内容 |
+
+## 预期行为
+
+### 正常流程
+
+1. 用户上传 PDF
+2. 系统立刻返回"上传成功，处理中"（PENDING 状态）
+3. 后台自动完成：解析 → 分块 → 向量化 → 存入索引
+4. 状态变为 COMPLETED，用户可以问答
+
+### 异常流程
+
+1. 文件格式不支持 → 上传时直接拒绝
+2. 文件太大 → 上传时直接拒绝
+3. PDF 解析失败 → 状态变为 FAILED，记录原因
+4. Ollama 不可用 → 状态变为 FAILED，重试 3 次后停止
+5. 用户点击"重试" → 状态回到 PENDING，重新处理
+
+## 为什么这个切片比认证复杂
+
+文档摄入涉及**异步处理**：上传是同步的，但处理是后台进行的。这引入了多个新概念：
+
+- **状态机**：文档有 PENDING → PROCESSING → COMPLETED/FAILED 的状态流转
+- **后台 Worker**：定时轮询任务队列
+- **租约机制**：防止多个 Worker 同时处理同一个任务
+- **补偿逻辑**：每一步失败都要回滚之前的操作
+- **双写索引**：向量索引 + 关键词索引必须同时成功
+
+学完这个切片后，你会理解：
+- 状态机怎么在代码中实现
+- 异步任务队列怎么设计
+- 失败时怎么清理残留数据
+- 为什么文档内容是独立聚合根
+
+## 本章涉及的主要代码文件
+
+| 层级 | 文件路径 |
+|------|---------|
+| Domain | `synapse-kb-domain/.../model/Document.java` |
+| Domain | `synapse-kb-domain/.../model/DocumentStatus.java` |
+| Domain | `synapse-kb-domain/.../model/IngestionJob.java` |
+| Domain | `synapse-kb-domain/.../service/RecursiveChunkingStrategy.java` |
+| Application | `synapse-kb-application/.../port/in/IngestDocumentUseCase.java` |
+| Application | `synapse-kb-application/.../port/service/KnowledgeBaseApplicationService.java` |
+| Adapter-In | `synapse-kb-adapter/.../in/web/DocumentController.java` |
+| Adapter-In | `synapse-kb-adapter/.../in/worker/IngestionJobWorker.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/parser/ApacheTikaDocumentParserAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/embedding/OllamaEmbeddingAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/vector/MilvusVectorStoreAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/persistence/MongoChunkSearchIndexAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/persistence/GridFsDocumentContentStoreAdapter.java` |
+| Config | `synapse-kb-config/.../KnowledgeBaseBeanConfig.java` |

@@ -1,0 +1,149 @@
+---
+title: Reactive 桥接模式
+description: WebFlux Mono/Flux、Application 层同步、.block() 桥接的实现解析
+---
+
+# 横向深入 —— Reactive 桥接模式
+
+这个项目有一个看似矛盾的设计：**Controller 返回 Mono/Flux（Reactive），但 Application Service 全是同步方法**。本章解释为什么这样设计，以及桥接是怎么实现的。
+
+## WebFlux 基础概念
+
+Spring WebFlux 基于 **Reactor** 库，核心类型只有两个：
+
+| 类型 | 含义 | 类比 |
+|------|------|------|
+| `Mono<T>` | 异步返回 0 或 1 个值 | `CompletableFuture<T>` |
+| `Flux<T>` | 异步返回 0 到 N 个值 | `Stream<T>` + 异步 |
+
+```java
+// Mono —— 一个异步结果
+Mono<User> userMono = userRepository.findById("123");
+
+// 订阅后才会执行
+userMono.subscribe(user -> System.out.println(user.getName()));
+```
+
+关键理解：**Mono/Flux 是"懒"的**——定义了流水线，但不执行，直到有人订阅。
+
+## Application 层为什么同步
+
+五个原因：
+
+| 原因 | 说明 |
+|------|------|
+| 1. 领域模型不关心线程 | `Document.transitionTo()` 不需要知道自己在哪个线程执行 |
+| 2. 测试简单 | 同步方法直接调用，不用 `StepVerifier` 或 `block()` |
+| 3. 事务边界清晰 | 一个方法一个事务，不用考虑 Reactive 事务的传播 |
+| 4. 代码可读 | 从上到下顺序执行，没有 `.flatMap()`、`.zipWith()` 嵌套 |
+| 5. 技术无关 | Application 层不绑定 Reactor，未来可以复用到 Servlet 项目 |
+
+```java
+// Application 层 —— 纯同步
+public DocumentId ingest(IngestDocumentCommand command) {
+    KnowledgeBase kb = requireKnowledgeBase(command.knowledgeBaseId());
+    accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+    // ... 顺序执行，没有 Mono
+    return document.getId();
+}
+```
+
+## Reactive 边界 —— 哪里异步、哪里同步
+
+```
+Browser ──HTTP──→ Controller (Mono/Flux) ──→ SaTokenReactorBridge.blockingCall()
+                                                        ↓
+                                               Schedulers.boundedElastic()
+                                                        ↓
+                                               Application Service (同步)
+                                                        ↓
+                                               Repository / Port (同步)
+                                                        ↓
+                                               MongoDB / Ollama (阻塞 IO)
+```
+
+**规则**：
+- **Adapter-In（Controller）**：返回 `Mono<T>` / `Flux<T>`，接收 WebFlux 请求
+- **Application Service**：同步方法，返回领域对象
+- **Adapter-Out（Repository）**：同步实现，Spring Data MongoDB 是同步 API
+
+## SaTokenReactorBridge 实现解析
+
+```java
+// SaTokenReactorBridge.java
+final class SaTokenReactorBridge {
+
+    static <T> Mono<T> blockingCall(CheckedSupplier<T> supplier) {
+        return SaReactorHolder.sync(() -> {
+                    try {
+                        return supplier.get();
+                    } catch (RuntimeException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+}
+```
+
+拆解三层：
+
+### 1. `SaReactorHolder.sync()` —— 保存 Sa-Token 上下文
+
+Sa-Token 的登录信息存储在 `ThreadLocal` 中。WebFlux 是事件驱动模型，请求处理可能在不同线程间切换，`ThreadLocal` 会丢失。
+
+`SaReactorHolder.sync()` 把当前线程的 Sa-Token 上下文**复制**到执行 `supplier` 的线程里，确保 `StpUtil.getLoginId()` 在弹性线程池里也能拿到用户 ID。
+
+### 2. `subscribeOn(Schedulers.boundedElastic())` —— 避免阻塞 Netty
+
+WebFlux 默认运行在 **Netty 事件循环线程**上。这个线程数量很少（通常 = CPU 核心数），**绝对不能阻塞**。如果同步代码直接跑在 Netty 线程上，一个 MongoDB 查询慢了几秒，整个服务器就停止响应新请求了。
+
+`Schedulers.boundedElastic()` 创建一个**弹性线程池**：
+- 线程数按需增长，有上限
+- 阻塞操作（DB 查询、HTTP 调用）在这里执行
+- Netty 线程保持自由，继续接收新请求
+
+### 3. `CheckedSupplier` —— 允许抛出受检异常
+
+Java 的 `Supplier` 不允许抛受检异常（`throws Exception`）。`CheckedSupplier` 扩展了这一点，让 Application Service 可以自然抛出 `DomainException`。
+
+## 为什么不用 `.block()` 直接桥接
+
+你可能会想：
+
+```java
+// 为什么不用这个简单写法？
+@GetMapping("/api/kb")
+public Mono<List<KnowledgeBase>> list() {
+    return Mono.fromCallable(() -> service.listAll())
+        .subscribeOn(Schedulers.boundedElastic());
+}
+```
+
+项目里确实也有这个写法（`StreamingQueryController` 里用了）。两种写法等效：
+- `Mono.fromCallable() + subscribeOn` —— 更标准，不需要 SaTokenReactorBridge
+- `SaTokenReactorBridge.blockingCall()` —— 额外保存 Sa-Token 上下文
+
+`blockingCall()` 封装了 `SaReactorHolder.sync()`，是 Sa-Token + WebFlux 的**专用桥接**。如果你换成 JWT + WebFlux，就不需要这个桥接了。
+
+## Netty 事件循环为什么不能阻塞
+
+想象一个餐厅：
+- **Netty 事件循环** = 前台接待员（只有 4 个）
+- **弹性线程池** = 后厨厨师（可以临时加人）
+
+如果接待员去后厨炒菜（阻塞），门口排队的客人就没人接待了。正确的做法是：接待员把订单递给后厨，继续接待下一位客人，后厨做完再通知前台。
+
+这就是 `subscribeOn(Schedulers.boundedElastic())` 的本质——**把阻塞工作从 Netty 线程转移到专用线程池**。
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `Mono` 和 `Flux` 的区别是什么？
+- [ ] Application 层同步的 5 个原因中，哪个对你最有说服力？
+- [ ] `SaReactorHolder.sync()` 解决了什么问题？
+- [ ] `Schedulers.boundedElastic()` 的作用是什么？
+- [ ] 如果去掉 `subscribeOn()`，会发生什么？

@@ -1,0 +1,142 @@
+---
+title: 常见问题排查
+description: 日志查看技巧、各服务健康检查、常见错误速查
+---
+
+# 动手实践 —— 常见问题排查
+
+## 快速健康检查
+
+```bash
+# 后端是否启动
+curl http://localhost:8080/actuator/health
+
+# Ollama 是否运行
+curl http://localhost:11434/api/tags
+
+# MongoDB 是否连接
+mongosh --eval "db.adminCommand('ping')"
+
+# Milvus 是否运行
+# 看 Attu 能否连接，或检查 docker ps
+```
+
+## 常见问题
+
+### 登录失败：401 Unauthorized
+
+**现象**：前端提示登录失败，或接口返回 401。
+
+**排查**：
+1. 检查请求头中的 token 名称是否正确（默认 `satoken`）
+2. 确认 token 没有过期（默认 30 天）
+3. 查看后端日志是否有 `StpUtil.getLoginId()` 返回 null
+
+```bash
+# 查看最近日志
+tail -f synapse-kb-bootstrap/logs/synapse.log | grep -i "login\|auth\|token"
+```
+
+### 上传文件失败
+
+**现象**：上传后报错，或文档卡在 PENDING。
+
+**排查步骤**：
+1. 检查文件大小是否超过限制（默认 50MB）
+2. 检查文件扩展名是否在白名单
+3. 查看后端日志的 `DocumentController` 和 `ingest()` 方法
+4. 检查 MongoDB GridFS 是否正常工作
+
+```bash
+# 查看摄入相关日志
+tail -f logs/synapse.log | grep -i "ingest\|document\|chunk"
+```
+
+### 问答无结果
+
+**现象**：提问后回答"根据现有资料无法回答"。
+
+**排查步骤**：
+1. 确认文档已处理完成（状态 = COMPLETED）
+2. 检查 Milvus 中是否有该知识库的向量记录
+3. 检查 MongoDB `chunk_index` 中是否有记录
+4. 临时调高 `topK` 配置，看是否是阈值太严格
+
+### 问答非常慢
+
+**现象**：提问后很久才有响应。
+
+**排查步骤**：
+1. 检查 Ollama 是否在运行：`curl http://localhost:11434/api/tags`
+2. 检查是否是首次加载模型（首次会慢很多）
+3. 查看后端日志的 `prepare()` 耗时——是检索慢还是生成慢
+
+```
+# 如果检索慢（mergeAndRerank 之前）：检查 Milvus/MongoDB
+# 如果生成慢（StreamingLlmPort 之后）：Ollama 负载高
+```
+
+### 文档摄入失败
+
+**现象**：文档状态变成 FAILED。
+
+**排查步骤**：
+1. 查看失败原因：`document.failureReason`
+2. 检查 Ollama Embedding 服务是否正常
+3. 检查 Tika 解析是否报错（PDF 加密、损坏格式）
+4. 点击"重试"按钮，观察是否可恢复
+
+### SSE 流式输出中断
+
+**现象**：回答显示一半突然停止。
+
+**排查步骤**：
+1. 查看浏览器控制台是否有 SSE 连接错误
+2. 查看后端日志是否有 `StreamingLlmPort` 异常
+3. 检查是否触发了熔断/限流（Resilience4j）
+
+## 日志查看技巧
+
+### 后端日志级别调整
+
+```yaml
+# application.yaml
+logging:
+  level:
+    com.synapse.kb: DEBUG    # 查看详细检索日志
+    com.synapse.auth: DEBUG  # 查看认证流程
+```
+
+### 关键词过滤
+
+```bash
+# 只看知识库相关日志
+grep -E "KnowledgeBaseApplicationService|Document|Ingestion" logs/synapse.log
+
+# 只看错误
+grep -E "ERROR|DomainException|WARN" logs/synapse.log
+```
+
+### 追踪单个请求
+
+后端日志格式包含 `documentId=`、`knowledgeBaseId=` 等标记，可以用这些标记追踪一个请求的完整生命周期。
+
+## 端口占用
+
+```bash
+# 查看端口占用
+lsof -i :8080   # 后端
+lsof -i :5173   # 前端 dev server
+lsof -i :27017  # MongoDB
+lsof -i :19530  # Milvus
+lsof -i :11434  # Ollama
+```
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] 401 错误应该从哪几个方向排查？
+- [ ] 文档卡在 PENDING 可能是什么原因？
+- [ ] 如何区分"检索慢"和"生成慢"？
+- [ ] 后端日志级别在哪里调整？

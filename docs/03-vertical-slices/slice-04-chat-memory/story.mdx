@@ -1,0 +1,66 @@
+---
+title: 用户故事
+description: 聊天记忆要解决什么问题，涉及哪些角色
+---
+
+# 切片4：聊天记忆 —— 用户故事
+
+## 场景
+
+用户连续提问：
+- 第一轮："这个产品的主要功能是什么？"
+- 第二轮："它的价格是多少？"
+- 第三轮："和竞品相比有什么优势？"
+
+系统需要记住前面的对话，才能理解"它"指代什么。
+
+## 涉及的角色
+
+| 角色 | 职责 |
+|------|------|
+| **用户** | 连续提问 |
+| **浏览器** | 显示历史消息 |
+| **ChatController** | 会话管理 API |
+| **KnowledgeBaseApplicationService** | 记忆组装 |
+| **ChatSession** (Domain) | 会话状态和摘要 |
+| **ChatMessage** (Domain) | 消息记录 |
+| **OllamaChatMemorySummarizerAdapter** | 生成历史摘要 |
+
+## 预期行为
+
+### 正常流程
+
+1. 用户首次提问 → 创建新会话
+2. 系统把用户问题和回答存入记忆
+3. 后续提问时，系统携带摘要 + 最近消息作为上下文
+4. 消息数达到阈值 → 自动生成摘要
+5. 用户可随时新建会话
+
+### 关键限制
+
+- 不能把全量历史直接放入 prompt（会超限）
+- 旧历史压缩成摘要，只保留最近 N 条
+- 每个知识库可以有多个会话，会话之间隔离
+
+## 为什么记忆设计很重要
+
+LLM 是**无状态**的：每次请求都是独立的，它不会自动记住之前的对话。如果我们不主动把历史传入 prompt，LLM 就会"失忆"。
+
+但 LLM 有 **context window（上下文窗口）** 限制：qwen2.5:7b 大约支持 32K token。如果历史太长，就会：
+- 超出限制，请求失败
+- 挤占检索内容的空间
+- 引入噪声，降低回答质量
+
+Synapse 的解决方案：**摘要 + 最近消息**。
+
+## 本章涉及的主要代码文件
+
+| 层级 | 文件路径 |
+|------|---------|
+| Domain | `synapse-kb-domain/.../model/ChatSession.java` |
+| Domain | `synapse-kb-domain/.../model/ChatMessage.java` |
+| Application | `synapse-kb-application/.../repository/ChatSessionRepository.java` |
+| Application | `synapse-kb-application/.../port/out/ChatMemorySummarizerPort.java` |
+| Adapter-In | `synapse-kb-adapter/.../in/web/ChatController.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/persistence/MongoChatSessionRepository.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/llm/OllamaChatMemorySummarizerAdapter.java` |

@@ -1,0 +1,281 @@
+---
+title: Domain 层
+description: 用户实体、值对象、枚举、仓储接口
+---
+
+# 认证登录 —— Domain 层
+
+Domain 层是纯 Java 模块，零框架依赖。它定义了认证上下文的核心概念、规则和约束。
+
+## 模块结构
+
+```
+synapse-auth-domain/
+├── model/
+│   ├── UserAccount.java       # 用户聚合根实体
+│   ├── UserId.java            # 用户ID值对象
+│   ├── RoleName.java          # 角色名称枚举
+│   ├── RoleDefinition.java    # 角色定义实体
+│   └── AuthPermission.java    # 权限枚举
+└── repository/
+    ├── UserAccountRepository.java      # 用户仓储接口
+    └── RoleDefinitionRepository.java   # 角色仓储接口
+```
+
+## UserAccount —— 用户聚合根
+
+文件：`synapse-auth-domain/.../model/UserAccount.java`
+
+```java
+public class UserAccount {
+    private final UserId id;              // final = 创建后不能改
+    private String username;
+    private String displayName;
+    private String passwordHash;           // 只存哈希，不存明文
+    private Set<RoleName> roles;
+    private boolean enabled;
+    private final Instant createdAt;      // 创建时确定，终身不变
+
+    // 私有构造函数：外部不能直接 new
+    private UserAccount(UserId id, String username, String displayName, 
+                        String passwordHash, Set<RoleName> roles, 
+                        boolean enabled, Instant createdAt) {
+        this.id = id;
+        this.username = username;
+        this.displayName = displayName;
+        this.passwordHash = passwordHash;
+        this.roles = roles;
+        this.enabled = enabled;
+        this.createdAt = createdAt;
+    }
+}
+```
+
+### 为什么字段设计成这样？
+
+| 字段 | 是否 final | 原因 |
+|------|-----------|------|
+| `id` | final | 创建后不能改 |
+| `username` | 否 | 理论上可以改（虽然业务上可能不允许） |
+| `passwordHash` | 否 | 可以修改密码 |
+| `roles` | 否 | 可以重新分配角色 |
+| `enabled` | 否 | 可以启用/禁用 |
+| `createdAt` | final | 创建时确定，终身不变 |
+
+**判断标准**：这个属性在对象创建后还会变化吗？不会 → final；会 → 不用 final。
+
+### create() —— 静态工厂方法
+
+```java
+public static UserAccount create(String username, String displayName, 
+                                  String passwordHash, Set<RoleName> roles) {
+    validateUsername(username);
+    if (passwordHash == null || passwordHash.isBlank()) {
+        throw new DomainException("密码哈希不能为空");
+    }
+    Set<RoleName> safeRoles = (roles == null || roles.isEmpty())
+            ? EnumSet.of(RoleName.USER)   // 默认角色
+            : EnumSet.copyOf(roles);
+    return new UserAccount(UserId.generate(), username.trim(), 
+                           displayName, passwordHash, safeRoles, true, Instant.now());
+}
+
+private static void validateUsername(String username) {
+    if (username == null || username.isBlank()) {
+        throw new DomainException("用户名不能为空");
+    }
+    if (username.length() > 64) {
+        throw new DomainException("用户名不能超过64个字符");
+    }
+}
+```
+
+**为什么用静态工厂方法而不是 public 构造函数？**
+
+1. **校验**：创建前检查用户名不为空、不超过 64 字符
+2. **默认值**：没有指定角色时自动赋予 `USER` 角色
+3. **封装细节**：调用者不用管 id 怎么生成、createdAt 是什么时间
+
+### reconstruct() —— 从数据库"还魂"
+
+```java
+public static UserAccount reconstruct(UserId id, String username, String displayName,
+                                      String passwordHash, Set<RoleName> roles,
+                                      boolean enabled, Instant createdAt) {
+    return new UserAccount(id, username, displayName, passwordHash,
+            roles == null || roles.isEmpty() 
+                ? EnumSet.noneOf(RoleName.class) 
+                : EnumSet.copyOf(roles),
+            enabled, createdAt);
+}
+```
+
+**`create()` vs `reconstruct()` 的本质区别：**
+
+| | create | reconstruct |
+|---|--------|-------------|
+| **调用方** | Application Service | Repository |
+| **场景** | 创建新用户 | 从数据库恢复 |
+| **状态** | 强制 enabled=true | 数据库里是什么就是什么 |
+| **校验** | 强制执行 | 绕过（已存的数据信任它合法） |
+| **时间戳** | createdAt = now() | createdAt = 数据库旧值 |
+
+<Warning>
+  为什么 `reconstruct()` 必须放在 `UserAccount` 类内部？因为它需要访问 `UserAccount` 的 private 构造函数来还原状态。如果放在 Repository 里，Repository 无法调用 private 构造函数。
+</Warning>
+
+### 业务方法
+
+```java
+public void changePasswordHash(String passwordHash) {
+    if (passwordHash == null || passwordHash.isBlank()) {
+        throw new DomainException("密码哈希不能为空");
+    }
+    this.passwordHash = passwordHash;
+}
+
+public void assignRoles(Set<RoleName> roles) {
+    if (roles == null || roles.isEmpty()) {
+        throw new DomainException("用户至少需要一个角色");
+    }
+    this.roles = EnumSet.copyOf(roles);
+}
+
+public void enable() { this.enabled = true; }
+public void disable() { this.enabled = false; }
+public boolean hasRole(RoleName role) { return roles.contains(role); }
+```
+
+每个方法都包含**业务校验**：
+- 改密码时检查不为空
+- 分配角色时检查至少一个角色
+- `EnumSet.copyOf()` 防御外部修改传入的集合
+
+## UserId —— 值对象
+
+文件：`synapse-auth-domain/.../model/UserId.java`
+
+```java
+public record UserId(String value) {
+    public UserId {
+        if (value == null || value.isBlank()) {
+            throw new DomainException("用户ID不能为空");
+        }
+    }
+    public static UserId generate() {
+        return new UserId(UUID.randomUUID().toString());
+    }
+}
+```
+
+**为什么不用 String，而要包装成一个类？**
+
+```java
+// 如果都用 String：
+String docId = "abc-123";
+String kbId = "kb-456";
+document.setKnowledgeBaseId(docId);   // 编译不报错！但逻辑错了！
+
+// 用包装类型后：
+DocumentId docId = DocumentId.generate();
+KnowledgeBaseId kbId = KnowledgeBaseId.generate();
+document.setKnowledgeBaseId(docId);   // 编译报错！类型不匹配！
+```
+
+**类型系统帮你避免了"把文档 ID 塞到知识库 ID 位置"的低级错误。**
+
+`record` 天然不可变，自动生成 `equals()`、`hashCode()`、`toString()`，是值对象的理想选择。
+
+## RoleName 和 AuthPermission —— 枚举
+
+文件：`synapse-auth-domain/.../model/RoleName.java`
+
+```java
+public enum RoleName {
+    ADMIN,   // 管理员
+    USER     // 普通用户
+}
+```
+
+文件：`synapse-auth-domain/.../model/AuthPermission.java`
+
+```java
+public enum AuthPermission {
+    KB_READ,     // 读取知识库
+    KB_WRITE,    // 创建知识库、上传文档
+    KB_DELETE,   // 删除知识库、删除文档
+    AUTH_ADMIN   // 管理用户、角色、权限
+}
+```
+
+用枚举而不是 String 的好处：
+- 编译时检查，不会拼写错误
+- IDE 自动补全
+- 可以遍历所有可能的值
+
+## RoleDefinition —— 角色定义实体
+
+文件：`synapse-auth-domain/.../model/RoleDefinition.java`
+
+```java
+public class RoleDefinition {
+    private final RoleName name;           // 角色名称（唯一标识）
+    private Set<AuthPermission> permissions;
+
+    public static RoleDefinition create(RoleName name, Set<AuthPermission> permissions) {
+        if (name == null) throw new DomainException("角色不能为空");
+        if (permissions == null || permissions.isEmpty()) 
+            throw new DomainException("角色权限不能为空");
+        return new RoleDefinition(name, EnumSet.copyOf(permissions));
+    }
+
+    public void assignPermissions(Set<AuthPermission> permissions) {
+        if (permissions == null || permissions.isEmpty()) 
+            throw new DomainException("角色权限不能为空");
+        this.permissions = EnumSet.copyOf(permissions);
+    }
+}
+```
+
+`RoleDefinition` 是另一个聚合根，和 `UserAccount` 是并列关系。它定义了"某个角色有哪些权限"，和用户是分开存储的。
+
+## Repository 接口
+
+文件：`synapse-auth-domain/.../repository/UserAccountRepository.java`
+
+```java
+public interface UserAccountRepository {
+    UserAccount save(UserAccount user);
+    Optional<UserAccount> findById(UserId id);
+    Optional<UserAccount> findByUsername(String username);
+    List<UserAccount> findAll(int page, int size);
+    boolean existsByUsername(String username);
+}
+```
+
+文件：`synapse-auth-domain/.../repository/RoleDefinitionRepository.java`
+
+```java
+public interface RoleDefinitionRepository {
+    RoleDefinition save(RoleDefinition role);
+    Optional<RoleDefinition> findByName(RoleName name);
+    List<RoleDefinition> findAll();
+}
+```
+
+**关键设计：**
+
+- 接口定义在 Domain 层，实现在 Adapter 层
+- 返回 `Optional<UserAccount>` 而不是 `UserAccount`，强制调用方处理"找不到"的情况
+- 分页参数用 `int page, int size`，而不是 Spring Data 的 `Pageable`（Domain 层不依赖 Spring）
+
+## 本章自检清单
+
+读完这一章，你应该能回答：
+
+- [ ] `UserAccount` 的字段哪些是 final，为什么？
+- [ ] `create()` 和 `reconstruct()` 有什么区别？分别用在什么场景？
+- [ ] 为什么用 `UserId` 值对象而不是 String？
+- [ ] 为什么枚举比 String 更好？
+- [ ] Repository 接口为什么返回 `Optional`？
+- [ ] `EnumSet.copyOf()` 的作用是什么？
