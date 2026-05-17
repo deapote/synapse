@@ -31,6 +31,7 @@
         <module>synapse-auth-domain</module>
         <module>synapse-auth-application</module>
         <module>synapse-auth-adapter</module>
+        <module>synapse-auth-config</module>
         <module>synapse-kb-domain</module>
         <module>synapse-kb-application</module>
         <module>synapse-kb-adapter</module>
@@ -58,6 +59,11 @@
             <dependency>
                 <groupId>com.synapse</groupId>
                 <artifactId>synapse-auth-adapter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.synapse</groupId>
+                <artifactId>synapse-auth-config</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

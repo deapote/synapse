@@ -17,24 +17,14 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * 流式知识库问答 Web 控制器（入站适配器）。
- *
- * <p>处理 SSE 流式问答 HTTP 请求，调用 {@link QueryKnowledgeBaseUseCase#prepare}
- * 完成检索 + prompt 组装，再通过 {@link StreamingLlmPort} 调用 LLM 流式生成回答。
- *
- * <p>SSE 事件协议：
- * <ul>
- *   <li>{@code event: token} —— 文本片段，data 为 {@code {"token":"..."}}</li>
- *   <li>{@code event: references} —— 引用来源，data 为 {@code {"references":[...]}}</li>
- *   <li>{@code event: complete} —— 流结束，data 为 {@code {}}</li>
- *   <li>{@code event: error} —— 错误，data 为 {@code {"message":"..."}}</li>
- * </ul>
+ * SSE 问答接口适配器。事件协议：session、token、references、complete、error。
  */
 @RestController
 public class StreamingQueryController {
@@ -53,21 +43,6 @@ public class StreamingQueryController {
         this.objectMapper = objectMapper;
     }
 
-    /**
-     * 流式问答接口（SSE）。
-     *
-     * <p>完整 RAG 流程：
-     * <ol>
-     *   <li>用户问题向量化 → 向量检索 topK 相似片段</li>
-     *   <li>组装 prompt（上下文 + 问题）</li>
-     *   <li>调用 LLM 流式生成回答，通过 SSE 逐 token 推送</li>
-     *   <li>推送引用来源后结束</li>
-     * </ol>
-     *
-     * @param kbId    知识库 ID
-     * @param request 查询请求，包含用户问题
-     * @return SSE 事件流
-     */
     @PostMapping(value = "/api/knowledge-bases/{kbId}/query/stream",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> queryStream(
@@ -75,7 +50,7 @@ public class StreamingQueryController {
             @RequestBody QueryRequest request
     ) {
         return SaTokenReactorBridge.blockingCall(
-                        () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query())))
+                        () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query(), request.sessionId())))
                 .flatMapMany(this::buildSseFlux)
                 .onErrorResume(e -> {
                     log.error("流式问答失败", e);
@@ -84,18 +59,15 @@ public class StreamingQueryController {
     }
 
     /**
-     * 构建 SSE 事件流。
-     *
-     * <p>事件顺序：token（多个）→ references → complete
-     *
-     * <p>使用 {@link Flux#using} 管理 {@link Stream} 生命周期，
-     * 确保取消或异常时 {@code Stream#close()} 被调用，进而触发 LLM 线程中断。
+     * 使用 {@link Flux#using} 绑定 Stream 生命周期，确保客户端断开时取消 LLM 生成。
      */
     private Flux<ServerSentEvent<String>> buildSseFlux(RagContext ragContext) {
         return Flux.using(
                 () -> streamingLlmPort.generateStream(ragContext.prompt()),
                 stream -> {
+                    StringBuilder answerBuilder = new StringBuilder();
                     Flux<ServerSentEvent<String>> tokenFlux = Flux.fromStream(stream)
+                            .doOnNext(answerBuilder::append)
                             .doOnCancel(() -> log.debug("SSE 连接被取消（用户停止生成）"))
                             .map(token -> sseEvent("token", Map.of("token", token)));
 
@@ -103,18 +75,29 @@ public class StreamingQueryController {
                             .map(this::toResponse)
                             .toList();
 
+                    Flux<ServerSentEvent<String>> sessionFlux = ragContext.sessionId() == null
+                            ? Flux.empty()
+                            : Flux.just(sseEvent("session", Map.of("sessionId", ragContext.sessionId())));
                     ServerSentEvent<String> refsEvent = sseEvent("references", Map.of("references", references));
-                    ServerSentEvent<String> completeEvent = sseEvent("complete", Map.of());
+                    Mono<ServerSentEvent<String>> completeEvent = Mono.fromCallable(() -> {
+                                queryUseCase.complete(ragContext, answerBuilder.toString());
+                                Object payload = ragContext.sessionId() == null
+                                        ? Map.of()
+                                        : Map.of("sessionId", ragContext.sessionId());
+                                return sseEvent("complete", payload);
+                            })
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .onErrorResume(e -> {
+                                log.error("保存聊天回复失败 sessionId={}", ragContext.sessionId(), e);
+                                return Mono.just(sseEvent("error", Map.of("message", "回答已生成但保存聊天记录失败")));
+                            });
 
-                    return Flux.concat(tokenFlux, Flux.just(refsEvent, completeEvent));
+                    return Flux.concat(sessionFlux, tokenFlux, Flux.just(refsEvent), completeEvent);
                 },
                 Stream::close
         );
     }
 
-    /**
-     * 将领域对象转为响应 DTO。
-     */
     private ChunkReferenceResponse toResponse(ChunkReference ref) {
         return new ChunkReferenceResponse(
                 ref.documentId(),
@@ -126,13 +109,6 @@ public class StreamingQueryController {
         );
     }
 
-    /**
-     * 构建 SSE 事件。
-     *
-     * @param eventName 事件类型（token / references / complete / error）
-     * @param data      事件数据，会被序列化为 JSON
-     * @return SSE 事件对象
-     */
     private ServerSentEvent<String> sseEvent(String eventName, Object data) {
         try {
             return ServerSentEvent.<String>builder()

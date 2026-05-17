@@ -11,6 +11,7 @@ import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.Spliterator;
@@ -23,46 +24,26 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 /**
- * Ollama 流式大语言模型适配器。
- *
- * <p>实现 {@link StreamingLlmPort}，通过本地 Ollama 服务调用流式 chat 模型，
- * 将 LangChain4j 的回调式 API 桥接为 JDK {@link Stream}{@code <String>}。
- *
- * <p>取消信号传播链路：
- * <ol>
- *   <li>前端关闭 SSE 连接 → Spring WebFlux 取消 {@code Flux} 订阅</li>
- *   <li>{@code Flux} 取消时调用 {@code Stream#close()}</li>
- *   <li>{@code close()} 设置取消标志并中断 LLM 线程</li>
- *   <li>LangChain4j 回调中检测到取消后调用 {@code StreamingHandle#cancel()}</li>
- *   <li>Ollama HTTP SSE 连接被关闭，停止生成 token</li>
- * </ol>
+ * Ollama 流式模型适配器，将 LangChain4j 回调桥接为可取消的 JDK Stream。
  */
 @Component
 public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
 
-    /** 毒丸对象，用于标记流结束。唯一实例，不会与任何真实 token 混淆。 */
-    private static final Object POISON = new Object();
+    private static final Object END_OF_STREAM = new Object();
 
     private final OllamaStreamingChatModel streamingChatModel;
 
     public OllamaStreamingLlmAdapter(
             @Value("${ollama.base-url:http://localhost:11434}") String baseUrl,
-            @Value("${ollama.chat-model:qwen2.5:7b}") String modelName) {
+            @Value("${ollama.chat-model:qwen2.5:7b}") String modelName,
+            @Value("${ollama.chat-timeout-seconds:120}") long timeoutSeconds) {
         this.streamingChatModel = OllamaStreamingChatModel.builder()
                 .baseUrl(baseUrl)
                 .modelName(modelName)
+                .timeout(Duration.ofSeconds(timeoutSeconds))
                 .build();
     }
 
-    /**
-     * 流式生成文本片段。
-     *
-     * <p>内部使用 {@link BlockingQueue} 将 LangChain4j 的推送式回调
-     * 桥接为 JDK {@code Stream<String>} 的拉取模型。
-     *
-     * @param prompt 组装好的提示词
-     * @return 文本片段流
-     */
     @Override
     public Stream<String> generateStream(String prompt) {
         BlockingQueue<Object> queue = new LinkedBlockingQueue<>(1000);
@@ -75,43 +56,38 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                 .start(() -> {
                     try {
                         streamingChatModel.chat(prompt, new StreamingChatResponseHandler() {
-                    /**
-                     * 简版回调（无 {@link StreamingHandle}）。
-                     * 若 LangChain4j 调用此重载，取消时无法直接中断 Ollama HTTP 连接，
-                     * 但线程中断与有界队列满溢仍会阻止 token 继续流入前端。
-                     */
-                    @Override
-                    public void onPartialResponse(String partialResponse) {
-                        if (cancelled.get()) {
-                            return;
-                        }
-	                        enqueue(queue, partialResponse, errorRef);
-                    }
+                            @Override
+                            public void onPartialResponse(String partialResponse) {
+                                if (cancelled.get()) {
+                                    return;
+                                }
+                                enqueue(queue, partialResponse, errorRef);
+                            }
 
-                    @Override
-                    public void onPartialResponse(PartialResponse partialResponse, PartialResponseContext context) {
-                        handleRef.set(context.streamingHandle());
-                        if (cancelled.get()) {
-                            context.streamingHandle().cancel();
-                            return;
-                        }
-	                        enqueue(queue, partialResponse.text(), errorRef);
-                    }
+                            @Override
+                            public void onPartialResponse(PartialResponse partialResponse, PartialResponseContext context) {
+                                handleRef.set(context.streamingHandle());
+                                if (cancelled.get()) {
+                                    context.streamingHandle().cancel();
+                                    return;
+                                }
+                                enqueue(queue, partialResponse.text(), errorRef);
+                            }
 
-                    @Override
-                    public void onCompleteResponse(ChatResponse response) {
-	                        enqueue(queue, POISON, errorRef);
-                    }
+                            @Override
+                            public void onCompleteResponse(ChatResponse response) {
+                                enqueue(queue, END_OF_STREAM, errorRef);
+                            }
 
-                    @Override
-                    public void onError(Throwable error) {
-	                        errorRef.set(error);
-	                        enqueue(queue, POISON, errorRef);
-                    }
+                            @Override
+                            public void onError(Throwable error) {
+                                errorRef.set(error);
+                                enqueue(queue, END_OF_STREAM, errorRef);
+                            }
                         });
                     } catch (Exception e) {
-	                        errorRef.set(e);
-	                        enqueue(queue, POISON, errorRef);
+                        errorRef.set(e);
+                        enqueue(queue, END_OF_STREAM, errorRef);
                     }
                 });
 
@@ -129,14 +105,14 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                 }
                 try {
                     next = queue.take();
-	                    if (next == POISON) {
-	                        next = null;
-	                        pendingError = errorRef.get();
-	                        if (pendingError != null) {
-	                            throw new DomainException("LLM 流式生成失败: " + pendingError.getMessage(), pendingError);
-	                        }
-	                        return false;
-	                    }
+                    if (next == END_OF_STREAM) {
+                        next = null;
+                        pendingError = errorRef.get();
+                        if (pendingError != null) {
+                            throw new DomainException("LLM 流式生成失败: " + pendingError.getMessage(), pendingError);
+                        }
+                        return false;
+                    }
                     return true;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -168,8 +144,8 @@ public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
                 handle.cancel();
             }
             thread.interrupt();
-	        });
-	    }
+        });
+    }
 
     private static void enqueue(BlockingQueue<Object> queue, Object value, AtomicReference<Throwable> errorRef) {
         try {

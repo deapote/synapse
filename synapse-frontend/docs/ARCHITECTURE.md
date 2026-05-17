@@ -177,17 +177,18 @@ const client = axios.create({
   headers: { 'Content-Type': 'application/json' }
 })
 
-// 请求拦截器：添加 Content-Type、Auth Token（预留）
-// 响应拦截器：统一错误处理，提取后端错误消息
+// 请求拦截器：从 localStorage 读取 Sa-Token 并写入动态 token 请求头
+// 响应拦截器：统一错误处理；401 清理 token 并跳转登录页
 ```
 
 ### 6.2 API 模块
 
 | 模块 | 文件 | 接口 |
 |------|------|------|
+| 认证/权限 | `api/auth.ts` | login, logout, me, users, roles |
 | 知识库 | `api/knowledgeBase.ts` | create, delete, list |
 | 文档 | `api/document.ts` | upload, listByKb, delete |
-| 问答 | `api/query.ts` | query |
+| 问答 | `api/query.ts` | streamQueryKnowledgeBase |
 
 ### 6.3 类型定义
 
@@ -199,7 +200,21 @@ export interface KnowledgeBase {
   id: string
   name: string
   description: string
+  ownerUserId: string
   createdAt: string
+}
+
+export type RoleName = 'ADMIN' | 'USER'
+export type AuthPermission = 'KB_READ' | 'KB_WRITE' | 'KB_DELETE' | 'AUTH_ADMIN'
+
+export interface CurrentUser {
+  id: string
+  username: string
+  displayName: string
+  roles: RoleName[]
+  permissions: AuthPermission[]
+  enabled: boolean
+  createdAt: string | null
 }
 
 export interface Document {
@@ -222,10 +237,7 @@ export interface ChunkReference {
   endPosition: number
 }
 
-export interface AnswerResponse {
-  answer: string
-  references: ChunkReference[]
-}
+// 问答通过 SSE 返回 token / references / complete / error 事件。
 ```
 
 ## 7. 路由设计
@@ -233,33 +245,27 @@ export interface AnswerResponse {
 ```ts
 const routes = [
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { public: true }
+  },
+  {
     path: '/',
-    redirect: '/knowledge-bases'
-  },
-  {
-    path: '/knowledge-bases',
-    name: 'KnowledgeBaseList',
-    component: () => import('@/views/KnowledgeBaseList.vue')
-  },
-  {
-    path: '/knowledge-bases/:id',
-    name: 'KnowledgeBaseDetail',
-    component: () => import('@/views/KnowledgeBaseDetail.vue'),
-    props: true
-  },
-  {
-    path: '/knowledge-bases/:id/chat',
-    name: 'KnowledgeBaseChat',
-    component: () => import('@/views/ChatView.vue'),
-    props: true
-  },
-  {
-    path: '/chat',
-    name: 'Chat',
-    component: () => import('@/views/ChatView.vue')
+    component: MainLayout,
+    children: [
+      { path: '', redirect: '/knowledge-bases' },
+      { path: 'knowledge-bases', name: 'KnowledgeBaseList' },
+      { path: 'knowledge-bases/:id', name: 'KnowledgeBaseDetail', props: true },
+      { path: 'knowledge-bases/:id/chat', name: 'KnowledgeBaseChat', props: true },
+      { path: 'chat', name: 'Chat' },
+      { path: 'admin', name: 'Admin', meta: { requiresAdmin: true } }
+    ]
   }
 ]
 ```
+
+路由守卫会在进入非公开页面前调用 `/api/auth/me`。管理页需要 `ADMIN` 角色。
 
 ## 8. 样式策略
 
@@ -325,10 +331,10 @@ const routes = [
 
 1. 用户选择知识库（下拉选择器或从知识库详情页进入）
 2. 输入问题，点击发送
-3. 前端调用 POST /api/knowledge-bases/{kbId}/query
-4. 显示 loading 状态（打字机动画或脉冲点）
-5. 收到响应后，渲染 answer + references
-6. references 以卡片形式展示在消息下方
+3. 前端调用 POST /api/knowledge-bases/{kbId}/query/stream
+4. 使用 fetch + ReadableStream 手动解析 SSE
+5. `token` 事件流式追加到 assistant 消息
+6. `references` 事件渲染引用片段，`complete` 结束，`error` 展示失败原因
 
 ### 9.3 删除操作
 

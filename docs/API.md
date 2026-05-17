@@ -1,206 +1,263 @@
-# Synapse 知识库 RAG 系统 — API 接口文档
+# Synapse API 文档
 
 ## 1. 基础信息
 
 | 项 | 值 |
 |---|---|
 | 基础地址 | `http://localhost:8082` |
-| 协议 | HTTP |
-| 数据格式 | JSON（文件上传除外） |
+| 协议 | HTTP / SSE |
+| 数据格式 | JSON；文件上传使用 `multipart/form-data` |
 | 字符编码 | UTF-8 |
+
+除 `POST /api/auth/login` 外，所有 `/api/**` 接口都需要登录。登录成功后响应会返回 `tokenName` 与 `tokenValue`，后续请求用响应中的 `tokenName` 作为请求头名。
+
+```http
+synapse-token: <tokenValue>
+```
 
 ## 2. 通用约定
 
-### 2.1 请求格式
+### 成功响应
 
-- `Content-Type: application/json`（文件上传使用 `multipart/form-data`）
-- 路径参数使用 `{param}` 占位
-- 请求体字段如无特殊说明均为必填
+成功响应直接返回对象或数组，删除类接口返回空响应体。
 
-### 2.2 响应格式
-
-**成功响应**：直接返回对应的数据对象（非包装结构）。HTTP 状态码为 `200 OK`。
-
-**错误响应**：统一返回以下 JSON 结构，HTTP 状态码为 `400 Bad Request`（业务错误）或 `500 Internal Server Error`（系统错误）。
+### 错误响应
 
 ```json
 {
   "error": "BUSINESS_ERROR",
   "message": "错误描述信息",
-  "timestamp": "2026-05-12T08:30:00Z"
+  "timestamp": "2026-05-17T00:00:00Z"
 }
 ```
 
-### 2.3 时间格式
+常见错误码：
 
-所有时间字段使用 ISO-8601 UTC 格式，如 `2026-05-12T08:30:00Z`。
+| HTTP | error | 说明 |
+|---|---|---|
+| 400 | `BUSINESS_ERROR` | 参数错误、业务规则失败、重复上传等 |
+| 401 | `UNAUTHORIZED` | 未登录或 token 失效 |
+| 403 | `FORBIDDEN` | 权限不足 |
+| 500 | `INTERNAL_ERROR` | 未预期系统异常 |
 
-## 3. 接口清单
+## 3. 认证接口
 
-| 序号 | 方法 | 路径 | 说明 |
-|:---|:---|:---|:---|
-| 1 | POST | `/api/knowledge-bases` | 创建知识库 |
-| 2 | GET | `/api/knowledge-bases?page={page}&size={size}` | 列出知识库（支持分页） |
-| 3 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库 |
-| 4 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
-| 5 | GET | `/api/knowledge-bases/{kbId}/documents?page={page}&size={size}` | 列出文档（支持分页） |
-| 6 | DELETE | `/api/documents/{id}` | 删除文档 |
-| 7 | POST | `/api/knowledge-bases/{kbId}/query` | 知识库问答 |
+### 3.1 登录
 
----
+```http
+POST /api/auth/login
+Content-Type: application/json
+```
 
-## 4. 接口详情
+```json
+{
+  "username": "admin",
+  "password": "ChangeMe123!"
+}
+```
 
-### 4.1 创建知识库
+响应：
 
-创建一个新的知识库，用于组织和管理相关文档。
+```json
+{
+  "id": "user-id",
+  "username": "admin",
+  "displayName": "Administrator",
+  "roles": ["ADMIN"],
+  "permissions": ["KB_READ", "KB_WRITE", "KB_DELETE", "AUTH_ADMIN"],
+  "tokenName": "synapse-token",
+  "tokenValue": "token-value"
+}
+```
 
-**请求**
+### 3.2 登出
+
+```http
+POST /api/auth/logout
+synapse-token: <tokenValue>
+```
+
+### 3.3 当前用户
+
+```http
+GET /api/auth/me
+synapse-token: <tokenValue>
+```
+
+响应：
+
+```json
+{
+  "id": "user-id",
+  "username": "admin",
+  "displayName": "Administrator",
+  "roles": ["ADMIN"],
+  "permissions": ["KB_READ", "KB_WRITE", "KB_DELETE", "AUTH_ADMIN"],
+  "enabled": true,
+  "createdAt": "2026-05-17T00:00:00Z"
+}
+```
+
+## 4. 管理接口
+
+管理接口都需要 `AUTH_ADMIN` 权限。
+
+### 4.1 用户列表
+
+```http
+GET /api/admin/users?page=0&size=20
+synapse-token: <tokenValue>
+```
+
+分页约束：`page >= 0`，`1 <= size <= synapse.web.max-page-size`。
+
+### 4.2 创建用户
+
+```http
+POST /api/admin/users
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+```json
+{
+  "username": "alice",
+  "displayName": "Alice",
+  "password": "Password123",
+  "roles": ["USER"]
+}
+```
+
+密码至少 8 位，后端使用 BCrypt 保存哈希。
+
+### 4.3 修改用户角色
+
+```http
+PUT /api/admin/users/{id}/roles
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+```json
+{
+  "roles": ["USER"]
+}
+```
+
+### 4.4 启停用户
+
+```http
+PUT /api/admin/users/{id}/enabled
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+```json
+{
+  "enabled": false
+}
+```
+
+### 4.5 角色列表
+
+```http
+GET /api/admin/roles
+synapse-token: <tokenValue>
+```
+
+### 4.6 修改角色权限
+
+```http
+PUT /api/admin/roles/{roleName}/permissions
+Content-Type: application/json
+synapse-token: <tokenValue>
+```
+
+```json
+{
+  "permissions": ["KB_READ", "KB_WRITE"]
+}
+```
+
+## 5. 知识库接口
+
+权限规则：
+
+- `KB_READ`：列表、文档列表、问答。
+- `KB_WRITE`：创建知识库、上传文档。
+- `KB_DELETE`：删除知识库、删除文档。
+- `ADMIN` 可跨用户访问；`USER` 只能访问自己创建的知识库。
+
+### 5.1 创建知识库
 
 ```http
 POST /api/knowledge-bases
 Content-Type: application/json
+synapse-token: <tokenValue>
 ```
-
-**请求体**
-
-| 字段 | 类型 | 必填 | 说明 |
-|:---|:---|:---|:---|
-| `name` | string | 是 | 知识库名称，长度 1–200 |
-| `description` | string | 否 | 知识库描述 |
 
 ```json
 {
   "name": "产品手册知识库",
-  "description": "存放所有产品相关的技术文档"
+  "description": "存放产品相关文档"
 }
 ```
 
-**响应**
-
-| 字段 | 类型 | 说明 |
-|:---|:---|:---|
-| `id` | string | 知识库唯一标识（UUID） |
-| `name` | string | 知识库名称 |
-| `description` | string | 知识库描述 |
-| `createdAt` | string | 创建时间（ISO-8601） |
+响应：
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "id": "kb-id",
   "name": "产品手册知识库",
-  "description": "存放所有产品相关的技术文档",
-  "createdAt": "2026-05-12T08:30:00Z"
+  "description": "存放产品相关文档",
+  "ownerUserId": "user-id",
+  "createdAt": "2026-05-17T00:00:00Z"
 }
 ```
 
-**错误情况**
-
-- 名称重复或格式不合法 → `400 Bad Request`
-
----
-
-### 4.2 列出知识库
-
-查询系统中所有已创建的知识库列表。
-
-**请求**
+### 5.2 知识库列表
 
 ```http
 GET /api/knowledge-bases?page=0&size=20
+synapse-token: <tokenValue>
 ```
 
-**查询参数**
+响应为当前用户可访问的 `KnowledgeBaseResponse[]`。
 
-| 参数 | 类型 | 必填 | 说明 |
-|:---|:---|:---|:---|
-| `page` | integer | 否 | 页码，从 0 开始，默认 0 |
-| `size` | integer | 否 | 每页数量，默认 20 |
-
-**响应**
-
-返回 `KnowledgeBaseResponse` 数组，按创建时间倒序排列。
-
-```json
-[
-  {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "name": "产品手册知识库",
-    "description": "存放所有产品相关的技术文档",
-    "createdAt": "2026-05-12T08:30:00Z"
-  }
-]
-```
-
----
-
-### 4.3 删除知识库
-
-删除指定知识库，级联删除其下的所有文档及向量数据。
-
-**请求**
+### 5.3 删除知识库
 
 ```http
 DELETE /api/knowledge-bases/{id}
+synapse-token: <tokenValue>
 ```
 
-**路径参数**
+删除会清理该知识库下文档元数据、Milvus 向量和 Mongo 关键词索引；失败时以错误响应返回，残留数据后续可重试清理。
 
-| 参数 | 类型 | 说明 |
-|:---|:---|:---|
-| `id` | string | 知识库唯一标识 |
+## 6. 文档接口
 
-**响应**
-
-- 成功：HTTP `200 OK`，无响应体
-
-**错误情况**
-
-- 知识库不存在 → `400 Bad Request`
-
----
-
-### 4.4 上传文档
-
-向指定知识库上传文档。系统会自动解析文档内容、分块、生成向量并存储到 Milvus。
-
-**请求**
+### 6.1 上传文档
 
 ```http
 POST /api/knowledge-bases/{kbId}/documents
 Content-Type: multipart/form-data
+synapse-token: <tokenValue>
 ```
 
-**路径参数**
+表单字段：
 
-| 参数 | 类型 | 说明 |
-|:---|:---|:---|
-| `kbId` | string | 知识库唯一标识 |
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file` | file | 是 | 支持 `pdf`、`doc`、`docx`、`txt`、`md` |
 
-**表单参数**
+后端校验文件大小、扩展名、MIME、SHA-256 内容哈希和解析后文本长度。上传接口只创建 `PENDING` 文档并提交后台摄入任务。
 
-| 参数 | 类型 | 必填 | 说明 |
-|:---|:---|:---|:---|
-| `file` | file | 是 | 待上传的文件，支持 PDF、Word、TXT 等格式 |
-
-**响应**
-
-| 字段 | 类型 | 说明 |
-|:---|:---|:---|
-| `id` | string | 文档唯一标识 |
-| `knowledgeBaseId` | string | 所属知识库 ID |
-| `fileName` | string | 原始文件名 |
-| `fileType` | string | 文件 MIME 类型 |
-| `fileSize` | number | 文件大小（字节） |
-| `status` | string | 处理状态：`PENDING` |
-| `chunkCount` | number | 分块数量（处理完成前为 0） |
-| `uploadedAt` | string \| null | 上传时间 |
+响应：
 
 ```json
 {
-  "id": "doc-uuid-001",
-  "knowledgeBaseId": "550e8400-e29b-41d4-a716-446655440000",
-  "fileName": "产品手册_v2.pdf",
+  "id": "doc-id",
+  "knowledgeBaseId": "kb-id",
+  "fileName": "产品手册.pdf",
   "fileType": "application/pdf",
   "fileSize": 2048576,
   "status": "PENDING",
@@ -209,284 +266,156 @@ Content-Type: multipart/form-data
 }
 ```
 
-**说明**
-
-- 上传成功后文档状态为 `PENDING`，后台异步处理
-- 处理完成后状态变为 `COMPLETED`（成功）或 `FAILED`（失败）
-- 可通过「列出文档」接口查询最新状态
-
-**错误情况**
-
-- 知识库不存在 → `400 Bad Request`
-- 重复上传相同内容文档 → `400 Bad Request`
-
----
-
-### 4.5 列出文档
-
-查询指定知识库下的所有文档列表。
-
-**请求**
+### 6.2 文档列表
 
 ```http
 GET /api/knowledge-bases/{kbId}/documents?page=0&size=20
+synapse-token: <tokenValue>
 ```
 
-**路径参数**
-
-| 参数 | 类型 | 说明 |
-|:---|:---|:---|
-| `kbId` | string | 知识库唯一标识 |
-
-**查询参数**
-
-| 参数 | 类型 | 必填 | 说明 |
-|:---|:---|:---|:---|
-| `page` | integer | 否 | 页码，从 0 开始，默认 0 |
-| `size` | integer | 否 | 每页数量，默认 20 |
-
-**响应**
-
-返回 `DocumentResponse` 数组，按上传时间倒序排列。
+响应：
 
 ```json
 [
   {
-    "id": "doc-uuid-001",
-    "knowledgeBaseId": "550e8400-e29b-41d4-a716-446655440000",
-    "fileName": "产品手册_v2.pdf",
+    "id": "doc-id",
+    "knowledgeBaseId": "kb-id",
+    "fileName": "产品手册.pdf",
     "fileType": "application/pdf",
     "fileSize": 2048576,
     "status": "COMPLETED",
-    "chunkCount": 42,
-    "uploadedAt": "2026-05-12T08:35:00Z"
+    "chunkCount": 18,
+    "uploadedAt": "2026-05-17T00:00:00Z"
   }
 ]
 ```
 
-**状态说明**
+文档状态：
 
-| 状态值 | 含义 |
-|:---|:---|
-| `PENDING` | 等待处理 |
-| `PROCESSING` | 正在解析、分块、向量化 |
-| `COMPLETED` | 处理完成，可参与问答检索 |
-| `FAILED` | 处理失败，可重新上传 |
+| 状态 | 说明 |
+|---|---|
+| `PENDING` | 已创建，等待后台摄入 |
+| `PROCESSING` | 正在解析、语义分块、向量化并写入 Milvus 与 Mongo 关键词索引 |
+| `COMPLETED` | 摄入完成，可用于问答 |
+| `FAILED` | 摄入失败，可重新上传同内容触发清理后重试 |
 
----
-
-### 4.6 删除文档
-
-删除指定文档，同时清理向量库中的相关向量数据。
-
-**请求**
+### 6.3 删除文档
 
 ```http
 DELETE /api/documents/{id}
+synapse-token: <tokenValue>
 ```
 
-**路径参数**
+删除会同时清理 Milvus 向量和 Mongo 关键词索引。Milvus 删除条件同时包含 `knowledgeBaseId` 和 `documentId`，避免跨知识库误删。
 
-| 参数 | 类型 | 说明 |
-|:---|:---|:---|
-| `id` | string | 文档唯一标识 |
+## 7. 聊天会话接口
 
-**响应**
+聊天会话按“当前用户 + 知识库”隔离。即使拥有同一个知识库访问权，也不能读取其他用户的会话。
 
-- 成功：HTTP `200 OK`，无响应体
-
-**错误情况**
-
-- 文档不存在 → `400 Bad Request`
-
----
-
-### 4.7 知识库问答
-
-向指定知识库提问，系统执行 RAG 流程：检索相关文档片段 → 组装上下文 → 调用 LLM 生成回答。
-
-**请求**
+### 7.1 获取当前会话
 
 ```http
-POST /api/knowledge-bases/{kbId}/query
+GET /api/knowledge-bases/{kbId}/chat/sessions/current
+synapse-token: <tokenValue>
+```
+
+若当前用户在该知识库下没有会话，后端会自动创建。
+
+```json
+{
+  "id": "session-id",
+  "knowledgeBaseId": "kb-id",
+  "title": "新对话",
+  "summary": "",
+  "messageCount": 0,
+  "createdAt": "2026-05-17T05:00:00Z",
+  "updatedAt": "2026-05-17T05:00:00Z"
+}
+```
+
+### 7.2 新建会话
+
+```http
+POST /api/knowledge-bases/{kbId}/chat/sessions
+synapse-token: <tokenValue>
+```
+
+返回体同当前会话接口。前端“新对话”按钮使用该接口。
+
+### 7.3 分页读取消息
+
+```http
+GET /api/chat/sessions/{sessionId}/messages?page=0&size=50
+synapse-token: <tokenValue>
+```
+
+```json
+[
+  {
+    "id": "message-id",
+    "sessionId": "session-id",
+    "role": "assistant",
+    "content": "回答内容",
+    "references": [],
+    "sequence": 2,
+    "createdAt": "2026-05-17T05:01:00Z"
+  }
+]
+```
+
+## 8. 流式问答接口
+
+```http
+POST /api/knowledge-bases/{kbId}/query/stream
 Content-Type: application/json
+Accept: text/event-stream
+synapse-token: <tokenValue>
 ```
-
-**路径参数**
-
-| 参数 | 类型 | 说明 |
-|:---|:---|:---|
-| `kbId` | string | 知识库唯一标识 |
-
-**请求体**
-
-| 字段 | 类型 | 必填 | 说明 |
-|:---|:---|:---|:---|
-| `query` | string | 是 | 用户提问内容 |
 
 ```json
 {
-  "query": "产品的核心功能有哪些？"
+  "query": "这篇文档的主要内容是什么？",
+  "sessionId": "可选。为空时使用或创建当前用户在该知识库下的最新会话"
 }
 ```
 
-**响应**
+SSE 事件：
 
-| 字段 | 类型 | 说明 |
-|:---|:---|:---|
-| `answer` | string | LLM 生成的回答文本 |
-| `references` | array | 引用来源列表，按相似度降序排列 |
+```text
+event: session
+data: {"sessionId":"session-id"}
 
-**引用来源结构**
+event: token
+data: {"token":"文本片段"}
 
-| 字段 | 类型 | 说明 |
-|:---|:---|:---|
-| `documentId` | string | 来源文档 ID |
-| `documentName` | string | 来源文档文件名 |
-| `chunkText` | string | 被引用的片段文本 |
-| `score` | number | 相似度分数，范围 [0, 1]，越高越相关 |
-| `startPosition` | number | 片段在原文中的起始位置 |
-| `endPosition` | number | 片段在原文中的结束位置 |
+event: references
+data: {"references":[{"documentId":"doc-id","documentName":"产品手册.pdf","chunkText":"...","score":0.91,"startPosition":0,"endPosition":200}]}
 
-```json
-{
-  "answer": "根据产品手册，核心功能包括：1. 实时数据同步...",
-  "references": [
-    {
-      "documentId": "doc-uuid-001",
-      "documentName": "产品手册_v2.pdf",
-      "chunkText": "实时数据同步是本产品的核心功能之一...",
-      "score": 0.92,
-      "startPosition": 1520,
-      "endPosition": 1650
-    }
-  ]
-}
+event: complete
+data: {"sessionId":"session-id"}
 ```
 
-**错误情况**
+失败时返回：
 
-- 知识库不存在 → `400 Bad Request`
-- 知识库无可用文档（所有文档状态非 COMPLETED） → `400 Bad Request`
-
----
-
-## 5. 数据模型汇总
-
-### 5.1 CreateKnowledgeBaseRequest
-
-```json
-{
-  "name": "string",      // 必填，1-200 字符
-  "description": "string" // 可选
-}
+```text
+event: error
+data: {"message":"错误信息"}
 ```
 
-### 5.2 KnowledgeBaseResponse
+后端在 prompt 中用边界标记隔离检索片段和用户问题，并明确检索内容不具备指令优先级，以降低文档 prompt 注入风险。
 
-```json
-{
-  "id": "string",          // UUID
-  "name": "string",
-  "description": "string",
-  "createdAt": "string"    // ISO-8601 UTC
-}
+查询链路会先尝试 Query 改写，并用原 query 与改写 query 的 embedding 余弦相似度做质量门禁；默认阈值为 `0.8`，未通过或改写失败时自动回退原 query。检索结果来自 Milvus 向量召回与 Mongo BM25 关键词召回的融合重排，`score` 为融合后的最终分数。
+
+聊天记忆会在生成前保存用户消息，并把会话摘要与最近消息拼入 prompt；生成成功后保存 assistant 消息和引用。若生成失败，不保存半截 assistant 回复。
+
+## 9. CORS
+
+CORS 由 `synapse.cors.allowed-origins` 配置控制。默认只允许本地前端：
+
+```yaml
+synapse:
+  cors:
+    allowed-origins: http://localhost:5173,http://127.0.0.1:5173
 ```
 
-### 5.3 DocumentResponse
-
-```json
-{
-  "id": "string",
-  "knowledgeBaseId": "string",
-  "fileName": "string",
-  "fileType": "string",    // MIME type
-  "fileSize": 0,           // 字节
-  "status": "PENDING",     // PENDING | PROCESSING | COMPLETED | FAILED
-  "chunkCount": 0,
-  "uploadedAt": "string"   // ISO-8601 UTC，可能为 null
-}
-```
-
-### 5.4 QueryRequest
-
-```json
-{
-  "query": "string"  // 必填
-}
-```
-
-### 5.5 AnswerResponse
-
-```json
-{
-  "answer": "string",
-  "references": [
-    {
-      "documentId": "string",
-      "documentName": "string",
-      "chunkText": "string",
-      "score": 0.0,           // [0, 1]
-      "startPosition": 0,
-      "endPosition": 0
-    }
-  ]
-}
-```
-
-### 5.6 ErrorResponse
-
-```json
-{
-  "error": "BUSINESS_ERROR",
-  "message": "string",
-  "timestamp": "string"  // ISO-8601 UTC
-}
-```
-
-## 6. 前端对接要点
-
-### 6.1 跨域（CORS）
-
-后端已配置 CORS（`CorsWebFilter`），允许所有来源访问，但**不携带凭证**（`allowCredentials=false`）。生产环境建议收紧为具体域名。
-
-### 6.2 文件上传
-
-上传文档使用 `multipart/form-data`，前端示例（Fetch API）：
-
-```javascript
-const formData = new FormData();
-formData.append('file', fileInput.files[0]);
-
-fetch(`/api/knowledge-bases/${kbId}/documents`, {
-  method: 'POST',
-  body: formData
-})
-```
-
-注意：**不要**手动设置 `Content-Type` header，浏览器会自动生成包含 `boundary` 的正确 header。
-
-### 6.3 文档状态轮询
-
-上传后文档状态为 `PENDING`，需要轮询「列出文档」接口更新状态：
-
-```javascript
-// 建议轮询间隔：2 秒
-// 建议最大轮询次数：30 次（约 1 分钟）
-```
-
-### 6.4 问答引用展示
-
-`AnswerResponse.references` 提供了回答的引用来源，建议前端：
-
-1. 展示回答文本
-2. 在回答下方或侧边栏展示引用列表
-3. 可点击引用查看对应文档片段的详细信息
-
-### 6.5 状态码速查
-
-| 状态码 | 场景 |
-|:---|:---|
-| `200 OK` | 请求成功 |
-| `400 Bad Request` | 参数错误、业务规则违反、资源不存在 |
-| `500 Internal Server Error` | 系统内部错误 |
+生产环境必须显式配置真实前端域名。

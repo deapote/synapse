@@ -1,11 +1,30 @@
-import type { ChunkReference } from '@/types'
-import { getStoredToken } from '@/api/token'
+import client from '@/api/client'
+import type { ChatMessageResponse, ChatSession, ChunkReference } from '@/types'
+import { clearToken, getStoredToken } from '@/api/token'
 
 export interface StreamCallbacks {
+  onSession?: (sessionId: string) => void
   onToken: (token: string) => void
   onReferences: (references: ChunkReference[]) => void
   onComplete: () => void
   onError: (message: string) => void
+}
+
+export async function getCurrentChatSession(knowledgeBaseId: string): Promise<ChatSession> {
+  const { data } = await client.get<ChatSession>(`/knowledge-bases/${knowledgeBaseId}/chat/sessions/current`)
+  return data
+}
+
+export async function createChatSession(knowledgeBaseId: string): Promise<ChatSession> {
+  const { data } = await client.post<ChatSession>(`/knowledge-bases/${knowledgeBaseId}/chat/sessions`)
+  return data
+}
+
+export async function listChatMessages(sessionId: string, page = 0, size = 50): Promise<ChatMessageResponse[]> {
+  const { data } = await client.get<ChatMessageResponse[]>(`/chat/sessions/${sessionId}/messages`, {
+    params: { page, size }
+  })
+  return data
 }
 
 /**
@@ -19,6 +38,7 @@ export interface StreamCallbacks {
 export function streamQueryKnowledgeBase(
   knowledgeBaseId: string,
   query: string,
+  sessionId: string | null,
   callbacks: StreamCallbacks
 ): AbortController {
   const ctrl = new AbortController()
@@ -34,13 +54,19 @@ export function streamQueryKnowledgeBase(
   fetch(`${baseUrl}/knowledge-bases/${knowledgeBaseId}/query/stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(sessionId ? { query, sessionId } : { query }),
     signal: ctrl.signal,
   })
     .then(async (response) => {
       if (!response.ok) {
-        const text = await response.text()
-        throw new Error(`HTTP ${response.status}: ${text}`)
+        const message = await errorMessage(response)
+        if (response.status === 401) {
+          clearToken()
+          if (window.location.pathname !== '/login') {
+            window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`
+          }
+        }
+        throw new Error(message)
       }
       if (!response.body) {
         throw new Error('响应体为空')
@@ -83,7 +109,9 @@ export function streamQueryKnowledgeBase(
             continue
           }
 
-          if (event === 'token') {
+          if (event === 'session') {
+            callbacks.onSession?.(payload.sessionId)
+          } else if (event === 'token') {
             callbacks.onToken(payload.token)
           } else if (event === 'references') {
             callbacks.onReferences(payload.references)
@@ -110,4 +138,20 @@ export function streamQueryKnowledgeBase(
     })
 
   return ctrl
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  const text = await response.text()
+  if (!text) {
+    return `HTTP ${response.status}`
+  }
+  try {
+    const payload = JSON.parse(text)
+    if (payload?.message) {
+      return payload.message
+    }
+  } catch {
+    // Fall through to raw text.
+  }
+  return `HTTP ${response.status}: ${text}`
 }

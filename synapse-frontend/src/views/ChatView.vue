@@ -10,6 +10,7 @@ import {
   User,
   BookOpen,
   ChevronDown,
+  Plus,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -35,10 +36,10 @@ onMounted(() => {
 })
 
 function initChat() {
-  chatStore.clearHistory()
   if (kb.value) {
-    chatStore.initWelcome(kb.value.name)
+    chatStore.loadCurrentSession(kb.value.id, kb.value.name).then(scrollToBottom)
   } else {
+    chatStore.clearHistory()
     chatStore.initWelcome()
   }
 }
@@ -76,6 +77,11 @@ function handleSend() {
 
 function handleStop() {
   chatStore.stopGeneration()
+}
+
+function handleNewChat() {
+  if (!kb.value || chatStore.loading) return
+  chatStore.startNewSession(kb.value.id, kb.value.name).then(scrollToBottom)
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -124,8 +130,19 @@ function formatReferenceNumber(index: number): string {
           </div>
         </Transition>
       </div>
-      <div v-if="kb" class="model-info">
-        qwen2.5:7b
+      <div v-if="kb" class="header-actions">
+        <button
+          class="new-chat-btn"
+          :disabled="chatStore.loading"
+          title="新对话"
+          @click="handleNewChat"
+        >
+          <Plus :size="14" />
+          <span>新对话</span>
+        </button>
+        <div class="model-info">
+          qwen2.5:7b
+        </div>
       </div>
     </div>
 
@@ -290,6 +307,37 @@ function formatReferenceNumber(index: number): string {
 .model-info {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.new-chat-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.new-chat-btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.new-chat-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Dropdown */

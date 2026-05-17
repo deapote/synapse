@@ -5,12 +5,7 @@ import com.synapse.shared.exception.DomainException;
 import java.time.Instant;
 
 /**
- * 知识库聚合根。
- *
- * <p>知识库是文档的归属容器，本身仅维护元数据（名称、描述）。
- * 文档作为独立聚合根通过 {@code knowledgeBaseId} 与之关联，避免大聚合性能问题。
- *
- * <p>不可变设计：创建后字段不可修改，线程安全。
+ * 知识库聚合根，维护元数据和归属用户。
  */
 public class KnowledgeBase {
 
@@ -28,14 +23,6 @@ public class KnowledgeBase {
         this.createdAt = createdAt;
     }
 
-    /**
-     * 创建新的知识库。
-     *
-     * @param name        名称，必填，长度 1–200
-     * @param description 描述，可为空
-     * @return 新的知识库实例
-     * @throws DomainException 名称非法时抛出
-     */
     public static KnowledgeBase create(String name, String description, String ownerUserId) {
         if (name == null || name.isBlank()) {
             throw new DomainException("知识库名称不能为空");
@@ -49,18 +36,7 @@ public class KnowledgeBase {
         return new KnowledgeBase(KnowledgeBaseId.generate(), name, description, ownerUserId, Instant.now());
     }
 
-    /**
-     * 仅供仓储层重建聚合根使用。业务代码不应直接调用。
-     *
-     * <p>从持久化存储（如 MongoDB）读取数据后，通过此方法还原领域对象，
-     * 保留原有的 ID 和时间戳，不触发新的生成逻辑。
-     *
-     * @param id          知识库唯一标识
-     * @param name        名称
-     * @param description 描述
-     * @param createdAt   创建时间
-     * @return 重建后的知识库实例
-     */
+    /** 仅供仓储层重建聚合根使用。 */
     public static KnowledgeBase reconstruct(KnowledgeBaseId id, String name, String description, String ownerUserId, Instant createdAt) {
         return new KnowledgeBase(id, name, description, ownerUserId, createdAt);
     }

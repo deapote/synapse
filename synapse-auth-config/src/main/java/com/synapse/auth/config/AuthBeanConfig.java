@@ -1,4 +1,4 @@
-package com.synapse.auth.adapter.config;
+package com.synapse.auth.config;
 
 import com.synapse.auth.port.out.LoginSessionPort;
 import com.synapse.auth.port.out.PasswordHasherPort;

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/query'
-import type { ChatMessage, ChunkReference } from '@/types'
+import type { ChatMessage, ChatMessageResponse, ChatSession, ChunkReference } from '@/types'
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10)
@@ -11,8 +11,11 @@ export const useChatStore = defineStore('chat', () => {
   // State
   const messages = ref<ChatMessage[]>([])
   const loading = ref(false)
+  const loadingHistory = ref(false)
   const streaming = ref(false)
   const error = ref<string | null>(null)
+  const sessionId = ref<string | null>(null)
+  const session = ref<ChatSession | null>(null)
 
   // 当前流式请求的 AbortController
   let currentAbortCtrl: AbortController | null = null
@@ -89,7 +92,12 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
     stopFlushTimer()
 
-    currentAbortCtrl = api.streamQueryKnowledgeBase(knowledgeBaseId, query, {
+    currentAbortCtrl = api.streamQueryKnowledgeBase(knowledgeBaseId, query, sessionId.value, {
+      onSession: (id: string) => {
+        if (generation !== currentGeneration) return
+        sessionId.value = id
+      },
+
       onToken: (token: string) => {
         if (generation !== currentGeneration) return
         tokenBuffer += token
@@ -155,6 +163,8 @@ export const useChatStore = defineStore('chat', () => {
     currentGeneration++
     stopFlushTimer()
     messages.value = []
+    sessionId.value = null
+    session.value = null
     error.value = null
     streaming.value = false
     loading.value = false
@@ -177,14 +187,98 @@ export const useChatStore = defineStore('chat', () => {
     ]
   }
 
+  async function loadCurrentSession(knowledgeBaseId: string, knowledgeBaseName?: string) {
+    const generation = ++currentGeneration
+    stopFlushTimer()
+    if (currentAbortCtrl) {
+      currentAbortCtrl.abort()
+      currentAbortCtrl = null
+    }
+
+    loadingHistory.value = true
+    loading.value = true
+    streaming.value = false
+    error.value = null
+
+    try {
+      const current = await api.getCurrentChatSession(knowledgeBaseId)
+      if (generation !== currentGeneration) return
+      session.value = current
+      sessionId.value = current.id
+
+      const history = await api.listChatMessages(current.id, 0, 50)
+      if (generation !== currentGeneration) return
+      messages.value = history.map(toChatMessage)
+      if (messages.value.length === 0) {
+        initWelcome(knowledgeBaseName)
+      }
+    } catch (err) {
+      if (generation !== currentGeneration) return
+      messages.value = []
+      initWelcome(knowledgeBaseName)
+      error.value = err instanceof Error ? err.message : '加载聊天记录失败'
+    } finally {
+      if (generation === currentGeneration) {
+        loadingHistory.value = false
+        loading.value = false
+      }
+    }
+  }
+
+  async function startNewSession(knowledgeBaseId: string, knowledgeBaseName?: string) {
+    const generation = ++currentGeneration
+    stopFlushTimer()
+    if (currentAbortCtrl) {
+      currentAbortCtrl.abort()
+      currentAbortCtrl = null
+    }
+
+    loadingHistory.value = true
+    loading.value = true
+    streaming.value = false
+    error.value = null
+
+    try {
+      const created = await api.createChatSession(knowledgeBaseId)
+      if (generation !== currentGeneration) return
+      session.value = created
+      sessionId.value = created.id
+      initWelcome(knowledgeBaseName)
+    } catch (err) {
+      if (generation !== currentGeneration) return
+      error.value = err instanceof Error ? err.message : '创建新对话失败'
+    } finally {
+      if (generation === currentGeneration) {
+        loadingHistory.value = false
+        loading.value = false
+      }
+    }
+  }
+
+  function toChatMessage(message: ChatMessageResponse): ChatMessage {
+    return {
+      id: message.id,
+      sessionId: message.sessionId,
+      role: message.role,
+      content: message.content,
+      references: message.references,
+      createdAt: new Date(message.createdAt).getTime()
+    }
+  }
+
   return {
     messages,
     loading,
+    loadingHistory,
     streaming,
     error,
+    sessionId,
+    session,
     sendQuestionStream,
     stopGeneration,
     clearHistory,
-    initWelcome
+    initWelcome,
+    loadCurrentSession,
+    startNewSession
   }
 })

@@ -1,4 +1,4 @@
-package com.synapse.auth.adapter.config;
+package com.synapse.auth.config;
 
 import cn.dev33.satoken.reactor.filter.SaReactorFilter;
 import cn.dev33.satoken.router.SaRouter;

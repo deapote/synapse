@@ -4,6 +4,8 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.synapse.auth.adapter.in.web.dto.*;
 import com.synapse.auth.model.RoleName;
 import com.synapse.auth.port.in.UserAdminUseCase;
+import com.synapse.shared.exception.DomainException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
@@ -13,9 +15,12 @@ import java.util.List;
 @RequestMapping("/api/admin")
 public class UserAdminController {
     private final UserAdminUseCase userAdminUseCase;
+    private final int maxPageSize;
 
-    public UserAdminController(UserAdminUseCase userAdminUseCase) {
+    public UserAdminController(UserAdminUseCase userAdminUseCase,
+                               @Value("${synapse.web.max-page-size:100}") int maxPageSize) {
         this.userAdminUseCase = userAdminUseCase;
+        this.maxPageSize = maxPageSize;
     }
 
     @PostMapping("/users")
@@ -28,7 +33,10 @@ public class UserAdminController {
     public Mono<List<UserAdminUseCase.UserView>> listUsers(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return adminCall(() -> userAdminUseCase.listUsers(page, Math.min(size, 100)));
+        return adminCall(() -> {
+            validatePage(page, size);
+            return userAdminUseCase.listUsers(page, size);
+        });
     }
 
     @PutMapping("/users/{id}/roles")
@@ -64,6 +72,12 @@ public class UserAdminController {
             StpUtil.checkPermission("AUTH_ADMIN");
             return supplier.get();
         });
+    }
+
+    private void validatePage(int page, int size) {
+        if (page < 0 || size < 1 || size > maxPageSize) {
+            throw new DomainException("分页参数非法");
+        }
     }
 
     @FunctionalInterface

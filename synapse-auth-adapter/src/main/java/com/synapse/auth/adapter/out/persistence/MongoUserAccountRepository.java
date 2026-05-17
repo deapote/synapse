@@ -5,8 +5,10 @@ import com.synapse.auth.model.RoleName;
 import com.synapse.auth.model.UserAccount;
 import com.synapse.auth.model.UserId;
 import com.synapse.auth.repository.UserAccountRepository;
+import com.synapse.shared.exception.DomainException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.util.EnumSet;
@@ -25,7 +27,11 @@ public class MongoUserAccountRepository implements UserAccountRepository {
 
     @Override
     public UserAccount save(UserAccount user) {
-        return toEntity(mongoRepository.save(toDocument(user)));
+        try {
+            return toEntity(mongoRepository.save(toDocument(user)));
+        } catch (DuplicateKeyException e) {
+            throw new DomainException("用户名已存在", e);
+        }
     }
 
     @Override

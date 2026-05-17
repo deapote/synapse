@@ -69,16 +69,20 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
 
     @Override
     public UserView createUser(CreateUserCommand command) {
+        String username = command.username() == null ? null : command.username().trim();
+        if (username == null || username.isBlank()) {
+            throw new DomainException("用户名不能为空");
+        }
         if (command.password() == null || command.password().length() < 8) {
             throw new DomainException("密码长度至少8位");
         }
-        if (userRepository.existsByUsername(command.username())) {
+        if (userRepository.existsByUsername(username)) {
             throw new DomainException("用户名已存在");
         }
         Set<RoleName> roles = command.roles() == null || command.roles().isEmpty()
                 ? EnumSet.of(RoleName.USER)
                 : EnumSet.copyOf(command.roles());
-        UserAccount user = UserAccount.create(command.username(), command.displayName(),
+        UserAccount user = UserAccount.create(username, command.displayName(),
                 passwordHasher.hash(command.password()), roles);
         return toView(userRepository.save(user));
     }

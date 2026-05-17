@@ -2,183 +2,226 @@
 
 ## 1. 系统概述
 
-基于 Spring Boot + LangChain4j 的多知识库 RAG（检索增强生成）系统。
-支持多格式文档上传、自动解析分块、向量化存储、语义检索问答。
+Synapse 是基于 Spring Boot、Sa-Token、LangChain4j、MongoDB、Milvus 和 Ollama 的多知识库 RAG 系统。系统支持 RBAC 鉴权、知识库归属隔离、异步文档摄入、混合检索、Query 改写质量门禁和 SSE 流式问答。
 
 ## 2. 模块结构
 
-```
+```text
 synapse/
 ├── synapse-shared/              # 共享内核
-│   └── exception/DomainException.java
-├── synapse-kb-domain/           # 领域层 —— 纯 Java，零框架依赖
-│   ├── model/                   # 聚合根、值对象、枚举
-│   ├── repository/              # 仓储接口
-│   └── service/                 # 领域服务（纯算法）
-├── synapse-kb-application/      # 应用层 —— 用例编排，定义端口
-│   ├── port/in/                 # 入站端口（UseCase）
-│   ├── port/out/                # 出站端口（SPI）
-│   └── service/                 # 应用服务（编排器）
-├── synapse-kb-adapter/          # 适配器层 —— 所有技术实现
-│   ├── in/web/                  # WebFlux Controller + DTO
-│   └── out/                     # 出站适配器
-│       ├── embedding/           # Ollama Embedding
-│       ├── llm/                 # Ollama LLM
-│       ├── parser/              # Apache Tika
-│       ├── persistence/         # MongoDB（同步驱动）
-│       └── vector/              # Milvus
-├── synapse-kb-config/           # Spring Bean 组装配置
-│   └── config/KnowledgeBaseBeanConfig.java
-└── synapse-kb-bootstrap/        # Spring Boot 启动入口
-    └── resources/application.yaml
+├── synapse-auth-domain/         # 认证领域模型：UserAccount、RoleDefinition
+├── synapse-auth-application/    # 认证用例：登录、当前用户、用户/角色管理
+├── synapse-auth-adapter/        # 认证适配器：Web、Mongo、Sa-Token、BCrypt
+├── synapse-auth-config/         # 认证 Bean 组装、安全过滤器、种子数据
+├── synapse-kb-domain/           # 知识库领域模型、值对象、分块策略
+├── synapse-kb-application/      # 知识库用例编排、出站端口
+├── synapse-kb-adapter/          # 知识库 Web、Mongo、Milvus、Ollama、Tika 适配器
+├── synapse-kb-config/           # 知识库 Bean 组装
+├── synapse-kb-bootstrap/        # Spring Boot 启动入口
+└── synapse-frontend/            # Vue 前端
 ```
+
+依赖方向：
+
+```text
+shared <- domain <- application <- adapter <- config <- bootstrap
+```
+
+`auth` 与 `kb` 是并列 bounded context。知识库上下文通过 `AccessControlPort` 调用权限能力，具体 Sa-Token 实现由 `auth-adapter` 提供，避免 KB 应用层直接依赖鉴权框架。
 
 ## 3. 端口清单
 
-### 入站端口（UseCase）
+### 认证入站端口
 
 | 端口 | 职责 |
-|------|------|
+|---|---|
+| `AuthenticationUseCase` | 登录、登出、当前用户 |
+| `UserAdminUseCase` | 用户管理、角色绑定、角色权限管理 |
+
+### 认证出站端口
+
+| 端口 | 当前实现 |
+|---|---|
+| `PasswordHasherPort` | `BCryptPasswordHasherAdapter` |
+| `LoginSessionPort` | `SaTokenLoginSessionAdapter` |
+| `UserAccountRepository` | `MongoUserAccountRepository` |
+| `RoleDefinitionRepository` | `MongoRoleDefinitionRepository` |
+
+### 知识库入站端口
+
+| 端口 | 职责 |
+|---|---|
 | `CreateKnowledgeBaseUseCase` | 创建知识库 |
-| `ListKnowledgeBaseUseCase` | 列出所有知识库，支持分页 |
-| `DeleteKnowledgeBaseUseCase` | 删除知识库（级联清理，带事务） |
-| `IngestDocumentUseCase` | 上传并处理文档 |
-| `ListDocumentUseCase` | 列出知识库下的文档，支持分页 |
-| `DeleteDocumentUseCase` | 删除文档（连带清理向量） |
-| `QueryKnowledgeBaseUseCase` | 检索 + 组装 prompt，返回 `RagContext` |
+| `ListKnowledgeBaseUseCase` | 列出可访问知识库 |
+| `DeleteKnowledgeBaseUseCase` | 删除知识库及其文档/向量 |
+| `IngestDocumentUseCase` | 创建 `PENDING` 文档并提交异步摄入 |
+| `ListDocumentUseCase` | 列出知识库文档 |
+| `DeleteDocumentUseCase` | 删除文档及向量 |
+| `QueryKnowledgeBaseUseCase` | 检索并组装 RAG prompt |
 
-### 出站端口（Port）
+### 知识库出站端口
 
-| 端口 | 职责 | 当前实现 |
-|------|------|----------|
-| `VectorStorePort` | 向量存储与检索 | `MilvusVectorStoreAdapter` |
-| `EmbeddingPort` | 文本向量化 | `OllamaEmbeddingAdapter` |
-| `StreamingLlmPort` | LLM 流式文本生成 | `OllamaStreamingLlmAdapter` |
-| `DocumentParserPort` | 文档解析为纯文本 | `ApacheTikaDocumentParserAdapter` |
-| `KnowledgeBaseRepository` | 知识库元数据持久化 | `MongoKnowledgeBaseRepository` |
-| `DocumentRepository` | 文档元数据持久化 | `MongoDocumentRepository` |
+| 端口 | 当前实现 |
+|---|---|
+| `AccessControlPort` | `SaTokenKbAccessControlAdapter` |
+| `VectorStorePort` | `MilvusVectorStoreAdapter` |
+| `ChunkSearchIndexPort` | `MongoChunkSearchIndexAdapter` |
+| `EmbeddingPort` | `OllamaEmbeddingAdapter` |
+| `QueryRewritePort` | `OllamaQueryRewriteAdapter` |
+| `StreamingLlmPort` | `OllamaStreamingLlmAdapter` |
+| `DocumentParserPort` | `ApacheTikaDocumentParserAdapter` |
+| `KnowledgeBaseRepository` | `MongoKnowledgeBaseRepository` |
+| `DocumentRepository` | `MongoDocumentRepository` |
 
-## 4. 数据流
+## 4. 核心数据流
 
-### 4.1 文档摄入流程
+### 4.1 登录与权限
 
-```
-用户上传文件
-    |
-    v
-DocumentController.upload() — WebFlux 接收 multipart FilePart
-    |
-    v
-IngestDocumentUseCase.ingest()
-    |
-    v
-KnowledgeBaseApplicationService
-    |
-    +-- DocumentRepository.save() → MongoDB 同步驱动（状态 PENDING）
-    |
-    +-- processDocument():
-        |
-        +-- DocumentParserPort.parse() → ApacheTikaDocumentParserAdapter
-        +-- RecursiveChunkingStrategy.split() → domain service（纯算法）
-        +-- EmbeddingPort.embed() → OllamaEmbeddingAdapter
-        +-- VectorStorePort.store() → MilvusVectorStoreAdapter
-        +-- DocumentRepository.save() → MongoDB（状态 COMPLETED/FAILED）
+```text
+AuthController
+  -> AuthenticationUseCase.login()
+  -> UserAccountRepository.findByUsername()
+  -> BCryptPasswordHasherAdapter.matches()
+  -> SaTokenLoginSessionAdapter.login()
+  -> 返回 tokenName/tokenValue
 ```
 
-### 4.2 问答流程（SSE 流式）
+后续 `/api/**` 请求由 Sa-Token WebFlux 过滤器校验登录态。角色权限通过 `SaTokenPermissionAdapter` 从 MongoDB 读取。
 
-```
-用户提问
-    |
-    v
-StreamingQueryController.queryStream() — SSE 端点
-    |
-    v
-QueryKnowledgeBaseUseCase.prepare()
-    |
-    +-- EmbeddingPort.embed() → OllamaEmbeddingAdapter
-    +-- VectorStorePort.search() → MilvusVectorStoreAdapter（topK=5）
-    |
-    v
-RagContext（prompt + references）
-    |
-    v
-StreamingLlmPort.generateStream() → OllamaStreamingLlmAdapter
-    |
-    v
-SSE 事件流：token → token → ... → references → complete
+### 4.2 创建知识库
+
+```text
+KnowledgeBaseController
+  -> AccessControlPort.checkPermission(KB_WRITE)
+  -> KnowledgeBase.create(ownerUserId=currentUserId)
+  -> KnowledgeBaseRepository.save()
 ```
 
-## 5. API 端点
+`USER` 后续只能访问 `ownerUserId` 等于自己的知识库；`ADMIN` 不受该限制。
+
+### 4.3 文档摄入
+
+```text
+DocumentController.upload()
+  -> 读取 multipart 内容并校验大小/MIME/扩展名
+  -> 计算 SHA-256
+  -> IngestDocumentUseCase.ingest()
+  -> 校验知识库存在、权限和归属
+  -> 创建 Document(PENDING) 并保存 MongoDB
+  -> 提交后台摄入任务
+  -> 立即返回文档 ID 和 PENDING
+
+后台任务:
+  PENDING -> PROCESSING
+  -> Apache Tika 解析
+  -> RecursiveChunkingStrategy 语义分块
+  -> Ollama Embedding
+  -> Milvus store
+  -> Mongo chunk BM25 index store
+  -> COMPLETED
+  -> 失败时清理该文档向量和关键词索引并转 FAILED
+```
+
+Mongo 索引包含：
+
+- `knowledgeBase.ownerUserId`
+- `document.knowledgeBaseId`
+- `document.uploadedAt`
+- `document.knowledgeBaseId + contentHash` 唯一索引
+- `document_chunk_index.knowledgeBaseId + tokens`
+- `chat_sessions.ownerUserId + knowledgeBaseId + updatedAt`
+- `chat_messages.sessionId + sequence` 唯一索引
+- `user.username` 唯一索引
+
+### 4.4 流式问答
+
+```text
+StreamingQueryController
+  -> QueryKnowledgeBaseUseCase.prepare()
+  -> 校验 KB_READ 和知识库归属
+  -> 解析或创建当前用户的聊天会话
+  -> 保存用户消息，必要时压缩旧历史为摘要
+  -> QueryRewritePort.rewrite()
+  -> 原 query / 改写 query embedding 余弦相似度校验
+  -> 并行 Milvus 向量召回 + Mongo BM25 关键词召回
+  -> 分数融合重排(vectorWeight + keywordWeight)
+  -> 组装聊天摘要、最近消息、引用片段和用户问题
+  -> StreamingLlmPort.generateStream()
+  -> SSE: session -> token* -> references -> complete
+  -> 生成完成后保存 assistant 消息和引用
+```
+
+LLM 流式异常通过 SSE `error` 事件返回，不发送伪 `complete`。前端关闭 SSE 时会关闭 Java `Stream` 并触发底层生成取消。
+
+## 5. 领域模型
+
+### 认证
+
+- `UserAccount`：用户聚合根，包含用户名、显示名、BCrypt 密码哈希、角色集合、启停状态。
+- `RoleDefinition`：角色定义，包含角色名与权限集合。
+- `AuthPermission`：`KB_READ`、`KB_WRITE`、`KB_DELETE`、`AUTH_ADMIN`。
+- `RoleName`：`ADMIN`、`USER`。
+
+### 知识库
+
+- `KnowledgeBase`：知识库聚合根，包含归属用户 `ownerUserId`。
+- `Document`：独立聚合根，包含内容哈希、状态、失败原因、处理时间、分块数量。
+- `Query`：查询值对象，强制携带 `knowledgeBaseId`，禁止跨库查询。
+- `RagContext`：已组装 prompt 与引用片段。
+- `ChunkReference.score`：融合重排后的最终分数，范围 `[0, 1]`。
+- `ChatSession`：当前用户在某个知识库下的聊天会话，保存摘要、消息数量和摘要进度。
+- `ChatMessage`：单条用户或助手消息，按 `sessionId + sequence` 有序存储。
+
+### 文档状态机
+
+```text
+PENDING -> PROCESSING -> COMPLETED
+                     \-> FAILED
+FAILED -> PENDING
+```
+
+## 6. 安全设计
+
+- Sa-Token Reactor 负责 WebFlux 登录态校验。
+- Controller 调用同步应用服务时通过 Sa-Token Reactor 上下文桥接，避免线程切换丢失上下文。
+- 管理接口统一校验 `AUTH_ADMIN`。
+- KB/文档/问答接口同时校验权限和知识库归属。
+- 聊天记忆按 `ownerUserId + knowledgeBaseId + sessionId` 隔离，用户不能读取其他用户的会话。
+- 上传限制集中配置，默认不允许 `application/octet-stream`。
+- RAG prompt 明确检索内容不具备指令优先级，并用 XML 风格边界标记隔离用户问题与引用片段。
+- Query 改写必须通过 embedding 余弦相似度门禁，默认阈值 `0.8`，失败或低相似度时回退原 query。
+- CORS 默认只允许本地前端来源，生产环境必须显式配置。
+- 默认管理员密码仅用于开发，启动时会打印告警。
+
+## 7. 性能与稳定性
+
+- WebFlux 仅作为入站响应式边界；应用层保持同步 API。
+- MongoDB 使用同步 Spring Data MongoDB 仓储，阻塞调用在 Web 层隔离到 boundedElastic。
+- 文档摄入使用独立 Executor，默认虚拟线程。
+- RAG 检索使用独立 Executor 并行执行向量召回和关键词召回。
+- 聊天记忆只携带摘要和最近消息；旧历史达到阈值后通过 Ollama 非流式模型压缩。
+- 文本切分按 Markdown、段落、中英文句子、软标点和硬切逐级选择边界，默认保留约 15% 重叠窗口。
+- 上传接口会一次性读取文件内容，文件大小必须由 `synapse.upload.max-file-bytes` 控制在可接受范围内。
+- Milvus 客户端懒初始化，避免启动强依赖外部服务。
+- SSE 使用有界队列桥接 LLM 回调，队列满时阻塞生产端，避免静默丢 token。
+
+## 8. API 端点
+
+完整字段见 [API.md](API.md)。
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/knowledge-bases` | 创建知识库 |
-| GET | `/api/knowledge-bases?page={page}&size={size}` | 列出知识库（支持分页） |
-| DELETE | `/api/knowledge-bases/{id}` | 删除知识库（级联） |
-| POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档 |
-| GET | `/api/knowledge-bases/{kbId}/documents?page={page}&size={size}` | 列出文档（支持分页） |
-| DELETE | `/api/documents/{id}` | 删除文档 |
-| POST | `/api/knowledge-bases/{kbId}/query/stream` | 知识库流式问答（SSE） |
+|---|---|---|
+| POST | `/api/auth/login` | 登录 |
+| POST | `/api/auth/logout` | 登出 |
+| GET | `/api/auth/me` | 当前用户 |
+| GET/POST | `/api/admin/users` | 用户管理 |
+| GET/PUT | `/api/admin/roles...` | 角色权限管理 |
+| POST/GET/DELETE | `/api/knowledge-bases...` | 知识库管理 |
+| POST/GET/DELETE | `/api/.../documents...` | 文档管理 |
+| GET/POST | `/api/knowledge-bases/{kbId}/chat/sessions...` | 聊天会话 |
+| GET | `/api/chat/sessions/{sessionId}/messages` | 聊天消息 |
+| POST | `/api/knowledge-bases/{kbId}/query/stream` | SSE 流式问答 |
 
-### 错误响应格式
+## 9. 模块划分裁决
 
-```json
-{
-  "error": "BUSINESS_ERROR",
-  "message": "此知识库已存在相同内容的文档",
-  "timestamp": "2026-05-12T00:00:00Z"
-}
-```
-
-## 6. 领域模型详情
-
-### Document 状态机
-
-```
-PENDING --(ingest)--> PROCESSING --(success)--> COMPLETED
-                          |
-                          +--(failure)--> FAILED
-                          |
-FAILED --(retry)--> PENDING
-```
-
-- `transitionTo(DocumentStatus)` 校验流转合法性
-- `transitionTo(DocumentStatus, String failureReason)` 用于 FAILED 状态，同时记录失败原因
-- PROCESSING → COMPLETED/FAILED 时自动记录时间戳
-- 删除知识库操作标注 `@Transactional`，确保 MongoDB 元数据与 Milvus 向量数据一致性（需副本集模式）
-
-### 值对象
-
-| 类 | 说明 |
-|:---|:---|
-| `DocumentChunk` | 文档分块（index, text, startPosition, endPosition） |
-| `Query` | 用户查询（`KnowledgeBaseId knowledgeBaseId`, `String text`） |
-| `RagContext` | 检索上下文（prompt + `List<ChunkReference>`） |
-| `ChunkReference` | 引用来源（documentId, documentName, chunkText, score, position） |
-
-### 关键设计决策
-
-1. **Document 是独立聚合根**：知识库可能包含成百上千个文档，作为内部实体会导致大聚合性能问题。
-2. **同步 MongoDB 驱动**：使用 `spring-boot-starter-data-mongodb` 同步驱动 + `MongoRepository`，避免 Reactive 驱动混用 `.block()` 的反模式。
-3. **懒加载 Milvus 连接**：`MilvusVectorStoreAdapter` 不在构造函数中连接服务器，第一次使用时才初始化，避免启动依赖问题。
-4. **配置外部化**：所有 adapter 通过 `@Value` 读取 `application.yaml`，无硬编码。
-5. **filter 注入防护**：Milvus filter 字符串拼接前对值进行单引号转义。
-6. **虚拟线程隔离阻塞调用**：`OllamaStreamingLlmAdapter` 使用 `Thread.ofVirtual()` 包装 SSE 流推送，避免阻塞 WebFlux 事件循环。
-7. **CORS 安全**：允许所有来源但不携带凭证（`allowCredentials=false`），防止 CSRF 风险。
-
-## 7. 外部依赖
-
-| 服务 | 地址 | 用途 |
-|------|------|------|
-| MongoDB | mongodb://localhost:27017/synapse_kb | 文档/知识库元数据 |
-| Ollama | http://localhost:11434 | LLM + Embedding 推理 |
-| Milvus | http://127.0.0.1:19530 | 向量存储与相似度检索 |
-
-## 8. 扩展预留
-
-- **对话历史**：后续在 `synapse-kb-domain` 中新增 `Conversation` 聚合。
-- **用户权限**：后续新增 `synapse-auth` bounded context，通过 Anti-Corruption Layer 与知识库交互。
-- **多 Embedding 模型**：新增 `EmbeddingPort` 的实现即可，无需改动应用层。
-- **混合搜索**：向量搜索 + 关键词搜索（BM25），在 `VectorStorePort` 中扩展接口。
-- **流式输出**：已通过 SSE 实现，支持逐字推送和取消生成。
+当前模块划分合理：`auth` 与 `kb` 是两个并列 bounded context，职责边界清晰。已补齐 `synapse-auth-config`，使 auth 与 kb 在 `domain/application/adapter/config/bootstrap` 分层上保持一致。无需合并模块。

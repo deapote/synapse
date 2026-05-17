@@ -72,13 +72,23 @@ async function toggleRole(user: UserAdminView, role: RoleName) {
     ? user.roles.filter((r) => r !== role)
     : [...user.roles, role]
   if (nextRoles.length === 0) return
-  const updated = await authApi.assignRoles(user.id, nextRoles)
-  replaceUser(updated)
+  error.value = null
+  try {
+    const updated = await authApi.assignRoles(user.id, nextRoles)
+    replaceUser(updated)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '更新用户角色失败'
+  }
 }
 
 async function toggleEnabled(user: UserAdminView) {
-  const updated = await authApi.setEnabled(user.id, !user.enabled)
-  replaceUser(updated)
+  error.value = null
+  try {
+    const updated = await authApi.setEnabled(user.id, !user.enabled)
+    replaceUser(updated)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '更新用户状态失败'
+  }
 }
 
 async function togglePermission(roleName: RoleName, permission: AuthPermission) {
@@ -87,8 +97,13 @@ async function togglePermission(roleName: RoleName, permission: AuthPermission) 
     ? current.filter((p) => p !== permission)
     : [...current, permission]
   if (next.length === 0) return
-  const updated = await authApi.assignRolePermissions(roleName, next)
-  roles.value = roles.value.map((role) => role.name === roleName ? updated : role)
+  error.value = null
+  try {
+    const updated = await authApi.assignRolePermissions(roleName, next)
+    roles.value = roles.value.map((role) => role.name === roleName ? updated : role)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '更新角色权限失败'
+  }
 }
 
 function replaceUser(user: UserAdminView) {

@@ -17,13 +17,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * 知识库管理 Web 控制器（入站适配器）。
- *
- * <p>处理知识库的增删查改 HTTP 请求，调用 application 层 UseCase 完成业务逻辑。
- * 所有端点返回 {@code Mono<>}，内部将同步调用异步化，
- * 避免阻塞 Netty 事件循环线程。
- *
- * <p>基础路径：{@code /api/knowledge-bases}
+ * 知识库接口适配器，负责分页边界和 WebFlux 到同步用例的桥接。
  */
 @RestController
 @RequestMapping("/api/knowledge-bases")
@@ -47,12 +41,6 @@ public class KnowledgeBaseController {
         this.maxPageSize = maxPageSize;
     }
 
-    /**
-     * 创建知识库。
-     *
-     * @param request 创建请求，包含名称和描述
-     * @return 新创建的知识库信息（含生成的 ID）
-     */
     @PostMapping
     public Mono<KnowledgeBaseResponse> create(@RequestBody CreateKnowledgeBaseRequest request) {
         return SaTokenReactorBridge.blockingCall(() -> {
@@ -67,13 +55,6 @@ public class KnowledgeBaseController {
         });
     }
 
-    /**
-     * 列出所有知识库（支持分页）。
-     *
-     * @param page 页码，默认 0
-     * @param size 每页大小，默认 20
-     * @return 知识库列表，按创建时间倒序排列
-     */
     @GetMapping
     public Mono<List<KnowledgeBaseResponse>> list(
             @RequestParam(defaultValue = "0") int page,
@@ -95,12 +76,6 @@ public class KnowledgeBaseController {
         );
     }
 
-    /**
-     * 删除知识库（级联删除其下所有文档及向量）。
-     *
-     * @param id 知识库唯一标识
-     * @return 空响应，删除成功后返回 200 OK
-     */
     @DeleteMapping("/{id}")
     public Mono<Void> delete(@PathVariable String id) {
         return SaTokenReactorBridge.blockingAction(() -> deleteUseCase.delete(new KnowledgeBaseId(id)));

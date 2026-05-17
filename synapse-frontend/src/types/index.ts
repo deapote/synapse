@@ -83,6 +83,7 @@ export interface Document {
 
 export interface QueryRequest {
   query: string
+  sessionId?: string
 }
 
 export interface ChunkReference {
@@ -106,10 +107,31 @@ export interface ApiError {
 
 export type MessageRole = 'user' | 'assistant'
 
+export interface ChatSession {
+  id: string
+  knowledgeBaseId: string
+  title: string
+  summary: string
+  messageCount: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ChatMessage {
   id: string
+  sessionId?: string
   role: MessageRole
   content: string
   references?: ChunkReference[]
   createdAt: number
+}
+
+export interface ChatMessageResponse {
+  id: string
+  sessionId: string
+  role: MessageRole
+  content: string
+  references: ChunkReference[]
+  sequence: number
+  createdAt: string
 }

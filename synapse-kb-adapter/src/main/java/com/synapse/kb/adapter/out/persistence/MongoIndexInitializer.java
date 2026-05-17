@@ -2,6 +2,9 @@ package com.synapse.kb.adapter.out.persistence;
 
 import com.synapse.kb.adapter.out.persistence.entity.DocumentDocument;
 import com.synapse.kb.adapter.out.persistence.entity.KnowledgeBaseDocument;
+import com.synapse.kb.adapter.out.persistence.entity.ChunkIndexDocument;
+import com.synapse.kb.adapter.out.persistence.entity.ChatMessageDocument;
+import com.synapse.kb.adapter.out.persistence.entity.ChatSessionDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;
@@ -32,6 +35,27 @@ public class MongoIndexInitializer {
                                 org.bson.Document.parse("{'knowledgeBaseId': 1, 'contentHash': 1}"))
                                 .unique()
                                 .named("uk_kb_content_hash"));
+                mongoTemplate.indexOps(ChunkIndexDocument.class)
+                        .ensureIndex(new Index().on("knowledgeBaseId", Sort.Direction.ASC).named("idx_chunk_kb"));
+                mongoTemplate.indexOps(ChunkIndexDocument.class)
+                        .ensureIndex(new Index().on("documentId", Sort.Direction.ASC).named("idx_chunk_doc"));
+                mongoTemplate.indexOps(ChunkIndexDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'knowledgeBaseId': 1, 'tokens': 1}"))
+                                .named("idx_chunk_kb_tokens"));
+                mongoTemplate.indexOps(ChatSessionDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'ownerUserId': 1, 'knowledgeBaseId': 1, 'updatedAt': -1}"))
+                                .named("idx_chat_session_owner_kb_updated"));
+                mongoTemplate.indexOps(ChatMessageDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'sessionId': 1, 'sequence': 1}"))
+                                .unique()
+                                .named("uk_chat_message_session_sequence"));
+                mongoTemplate.indexOps(ChatMessageDocument.class)
+                        .ensureIndex(new CompoundIndexDefinition(
+                                org.bson.Document.parse("{'ownerUserId': 1, 'knowledgeBaseId': 1, 'createdAt': -1}"))
+                                .named("idx_chat_message_owner_kb_created"));
             } catch (DataAccessException e) {
                 log.warn("MongoDB 不可用，跳过索引初始化: {}", e.getMessage());
             }

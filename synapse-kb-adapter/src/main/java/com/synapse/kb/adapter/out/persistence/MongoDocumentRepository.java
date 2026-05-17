@@ -15,10 +15,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 文档仓储实现（MongoDB 适配器）。
- *
- * <p>实现领域层定义的 {@link DocumentRepository} 接口，将领域对象与 MongoDB 文档实体互相转换。
- * 使用 Spring Data MongoDB 同步驱动。
+ * 文档 MongoDB 仓储适配器。
  */
 @Component
 public class MongoDocumentRepository implements DocumentRepository {
@@ -87,9 +84,6 @@ public class MongoDocumentRepository implements DocumentRepository {
                 .toList();
     }
 
-    /**
-     * 将领域对象转换为 MongoDB 文档实体。
-     */
     private DocumentDocument toDocument(Document document) {
         DocumentDocument doc = new DocumentDocument();
         doc.setId(document.getId().value());
@@ -107,9 +101,6 @@ public class MongoDocumentRepository implements DocumentRepository {
         return doc;
     }
 
-    /**
-     * 将 MongoDB 文档实体转换为领域对象。
-     */
     private Document toEntity(DocumentDocument doc) {
         DocumentStatus status = doc.getStatus() != null
                 ? DocumentStatus.valueOf(doc.getStatus())

@@ -30,13 +30,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Milvus 向量存储适配器。
- *
- * <p>实现 {@link VectorStorePort}，通过 Milvus SDK v2 操作向量数据库，
- * 负责文档块向量的存储、相似度检索和按文档删除。
- *
- * <p>配置从 {@code application.yml} 读取，首次使用 {@code store}/{@code search}/{@code delete}
- * 时才连接 Milvus 服务器并初始化 Collection，避免启动时外部服务不可用导致应用崩溃。
+ * Milvus 向量存储适配器。客户端懒初始化，避免启动强依赖 Milvus。
  */
 @Component
 public class MilvusVectorStoreAdapter implements VectorStorePort {
@@ -45,6 +39,8 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     private final int port;
     private final String collectionName;
     private final int vectorDim;
+    private final long connectTimeoutMs;
+    private final long rpcDeadlineMs;
 
     private MilvusClientV2 client;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
@@ -53,19 +49,17 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
             @Value("${milvus.host:127.0.0.1}") String host,
             @Value("${milvus.port:19530}") int port,
             @Value("${milvus.collection-name:synapse_document_chunks}") String collectionName,
-            @Value("${milvus.embedding-dimension:1536}") int vectorDim) {
+            @Value("${milvus.embedding-dimension:1536}") int vectorDim,
+            @Value("${milvus.connect-timeout-ms:5000}") long connectTimeoutMs,
+            @Value("${milvus.rpc-deadline-ms:30000}") long rpcDeadlineMs) {
         this.host = host;
         this.port = port;
         this.collectionName = collectionName;
         this.vectorDim = vectorDim;
+        this.connectTimeoutMs = connectTimeoutMs;
+        this.rpcDeadlineMs = rpcDeadlineMs;
     }
 
-    /**
-     * 延迟初始化 Milvus 客户端和 Collection。
-     *
-     * <p>不在构造函数中执行，避免 Milvus 未启动时导致整个 Spring 上下文初始化失败。
-     * 第一次执行 {@code store} / {@code search} / {@code delete} 时才连接服务器并建表。
-     */
     private void ensureInitialized() {
         if (initialized.get()) {
             return;
@@ -76,6 +70,8 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
             }
             ConnectConfig config = ConnectConfig.builder()
                     .uri("http://" + host + ":" + port)
+                    .connectTimeoutMs(connectTimeoutMs)
+                    .rpcDeadlineMs(rpcDeadlineMs)
                     .build();
             this.client = new MilvusClientV2(config);
             initCollection();
@@ -83,9 +79,6 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         }
     }
 
-    /**
-     * 初始化 Collection：如果不存在则创建 Schema、索引并加载。
-     */
     private void initCollection() {
         Boolean exists = client.hasCollection(
                 HasCollectionReq.builder().collectionName(collectionName).build()
@@ -186,7 +179,8 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                     .data(List.of(new FloatVec(queryEmbedding)))
                     .filter("knowledgeBaseId == '" + escapeFilterValue(knowledgeBaseId.value()) + "'")
                     .topK(topK)
-                    .outputFields(List.of("documentId", "documentName", "chunkText", "startPosition", "endPosition"))
+                    .outputFields(List.of("documentId", "documentName", "chunkIndex",
+                            "chunkText", "startPosition", "endPosition"))
                     .build();
 
             SearchResp resp = client.search(req);
@@ -204,6 +198,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 results.add(new ChunkReference(
                         (String) entity.get("documentId"),
                         (String) entity.get("documentName"),
+                        ((Number) entity.get("chunkIndex")).intValue(),
                         (String) entity.get("chunkText"),
                         score,
                         ((Number) entity.get("startPosition")).intValue(),
@@ -231,24 +226,12 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         }
     }
 
-    /**
-     * 转义 Milvus filter 字符串中的单引号，防止注入攻击。
-     *
-     * <p>虽然当前 ID 为 UUID 格式（不含单引号），但作为防御性编程保留此校验。
-     *
-     * @param value 原始 filter 值
-     * @return 转义后的值
-     */
+    /** 转义 Milvus filter 值，防止表达式注入。 */
     private String escapeFilterValue(String value) {
         return value.replace("'", "\\'");
     }
 
-    /**
-     * 将 Milvus COSINE 分数从 [-1, 1] 映射到 [0, 1]。
-     *
-     * @param score 原始 COSINE 分数
-     * @return 归一化后的分数
-     */
+    /** 将 COSINE 分数从 [-1, 1] 映射到 [0, 1]。 */
     private float normalizeScore(Float score) {
         if (score == null) {
             return 0.0f;

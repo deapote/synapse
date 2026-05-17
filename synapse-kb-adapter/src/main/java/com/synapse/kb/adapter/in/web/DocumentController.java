@@ -10,6 +10,7 @@ import com.synapse.kb.port.in.ListDocumentUseCase;
 import com.synapse.shared.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.*;
@@ -22,13 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
 /**
- * 文档管理 Web 控制器（入站适配器）。
- *
- * <p>处理文档的上传、列表查询和删除 HTTP 请求，调用 application 层 UseCase 完成业务逻辑。
- * 文件上传使用 WebFlux 的 {@link FilePart} 接收 multipart 表单数据。
- *
- * <p>上传文档路径：{@code /api/knowledge-bases/{kbId}/documents}
- * <br>删除文档路径：{@code /api/documents/{id}}
+ * 文档接口适配器。负责上传边界校验，并将阻塞用例调用桥接到安全的线程上下文。
  */
 @RestController
 public class DocumentController {
@@ -46,7 +41,7 @@ public class DocumentController {
                               DeleteDocumentUseCase deleteUseCase,
                               @Value("${synapse.upload.max-file-bytes:20971520}") long maxFileBytes,
                               @Value("${synapse.upload.allowed-extensions:pdf,doc,docx,txt,md}") List<String> allowedExtensions,
-                              @Value("${synapse.upload.allowed-content-types:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,application/octet-stream}") List<String> allowedContentTypes,
+                              @Value("${synapse.upload.allowed-content-types:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown}") List<String> allowedContentTypes,
                               @Value("${synapse.web.max-page-size:100}") int maxPageSize) {
         this.ingestUseCase = ingestUseCase;
         this.listUseCase = listUseCase;
@@ -57,43 +52,35 @@ public class DocumentController {
         this.maxPageSize = maxPageSize;
     }
 
-    /**
-     * 上传文档到指定知识库。
-     *
-     * <p>流程：接收文件 → 读取字节 → 校验大小和类型 → 计算 SHA-256 哈希 → 调用摄入用例 → 返回文档信息。
-     * 文件读取使用 WebFlux 响应式流，处理逻辑调度到弹性线程池，避免阻塞 Netty 事件循环。
-     *
-     * @param kbId     目标知识库 ID
-     * @param filePart 上传的文件（multipart/form-data）
-     * @return 新创建的文档信息
-     */
     @PostMapping(value = "/api/knowledge-bases/{kbId}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Mono<DocumentResponse> upload(
             @PathVariable String kbId,
             @RequestPart("file") FilePart filePart
     ) {
-        return DataBufferUtils.join(filePart.content(), Math.toIntExact(maxFileBytes))
+        return DataBufferUtils.join(filePart.content(), maxJoinBytes())
                 .map(dataBuffer -> {
                     byte[] bytes = new byte[dataBuffer.readableByteCount()];
                     dataBuffer.read(bytes);
                     DataBufferUtils.release(dataBuffer);
                     return bytes;
                 })
+                .onErrorMap(DataBufferLimitException.class, e -> new DomainException("文件大小超过限制", e))
                 .flatMap(bytes -> SaTokenReactorBridge.blockingCall(() -> {
                     if (bytes.length <= 0 || bytes.length > maxFileBytes) {
                         throw new DomainException("文件大小超过限制");
                     }
+                    String fileName = safeFileName(filePart.filename());
                     String contentType = filePart.headers().getContentType() != null
                             ? filePart.headers().getContentType().toString()
                             : "application/octet-stream";
-                    validateFile(filePart.filename(), contentType);
+                    validateFile(fileName, contentType);
                     String contentHash = bytesToHex(MessageDigest.getInstance("SHA-256").digest(bytes));
                     InputStream content = new ByteArrayInputStream(bytes);
 
                     IngestDocumentUseCase.IngestDocumentCommand command =
                             new IngestDocumentUseCase.IngestDocumentCommand(
                                     new KnowledgeBaseId(kbId),
-                                    filePart.filename(),
+                                    fileName,
                                     contentType,
                                     bytes.length,
                                     contentHash,
@@ -105,7 +92,7 @@ public class DocumentController {
                     return new DocumentResponse(
                             documentId.value(),
                             kbId,
-                            filePart.filename(),
+                            fileName,
                             contentType,
                             bytes.length,
                             "PENDING",
@@ -115,14 +102,6 @@ public class DocumentController {
                 }));
     }
 
-    /**
-     * 列出指定知识库下的所有文档（支持分页）。
-     *
-     * @param kbId 知识库 ID
-     * @param page 页码，默认 0
-     * @param size 每页大小，默认 20
-     * @return 文档列表
-     */
     @GetMapping("/api/knowledge-bases/{kbId}/documents")
     public Mono<List<DocumentResponse>> list(
             @PathVariable String kbId,
@@ -147,23 +126,11 @@ public class DocumentController {
         });
     }
 
-    /**
-     * 删除指定文档（连带清理向量库中的相关向量）。
-     *
-     * @param id 文档唯一标识
-     * @return 空响应，删除成功后返回 200 OK
-     */
     @DeleteMapping("/api/documents/{id}")
     public Mono<Void> delete(@PathVariable String id) {
         return SaTokenReactorBridge.blockingAction(() -> deleteUseCase.delete(new DocumentId(id)));
     }
 
-    /**
-     * 将字节数组转换为十六进制字符串。
-     *
-     * @param bytes 原始字节数组
-     * @return 十六进制字符串（小写）
-     */
     private String bytesToHex(byte[] bytes) throws NoSuchAlgorithmException {
         StringBuilder sb = new StringBuilder();
         for (byte b : bytes) {
@@ -176,6 +143,25 @@ public class DocumentController {
         if (page < 0 || size < 1 || size > maxPageSize) {
             throw new DomainException("分页参数非法");
         }
+    }
+
+    private int maxJoinBytes() {
+        if (maxFileBytes > Integer.MAX_VALUE) {
+            throw new DomainException("文件大小限制配置超过系统支持上限");
+        }
+        return (int) maxFileBytes;
+    }
+
+    private String safeFileName(String filename) {
+        if (filename == null || filename.isBlank()) {
+            throw new DomainException("文件名不能为空");
+        }
+        String normalized = filename.replace('\\', '/');
+        String basename = normalized.substring(normalized.lastIndexOf('/') + 1).trim();
+        if (basename.isBlank() || ".".equals(basename) || "..".equals(basename)) {
+            throw new DomainException("文件名不能为空");
+        }
+        return basename;
     }
 
     private void validateFile(String filename, String contentType) {
