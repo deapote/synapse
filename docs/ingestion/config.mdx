@@ -1,0 +1,53 @@
+---
+title: Config 层
+description: Bean 组装、配置参数注入
+---
+
+# 文档上传与摄入 —— Config 层
+
+## KnowledgeBaseBeanConfig
+
+文件：`synapse-kb-config/.../KnowledgeBaseBeanConfig.java`
+
+```java
+@Configuration
+public class KnowledgeBaseBeanConfig {
+
+    @Bean
+    public RecursiveChunkingStrategy recursiveChunkingStrategy(
+            @Value("${synapse.chunking.max-size:1000}") int maxSize,
+            @Value("${synapse.chunking.overlap-ratio:0.15}") double overlapRatio,
+            @Value("${synapse.chunking.min-overlap:80}") int minOverlap,
+            @Value("${synapse.chunking.max-overlap:200}") int maxOverlap) {
+        return new RecursiveChunkingStrategy(maxSize, overlapRatio, minOverlap, maxOverlap);
+    }
+
+    @Bean
+    public KnowledgeBaseApplicationService knowledgeBaseApplicationService(
+            KnowledgeBaseRepository knowledgeBaseRepository,
+            DocumentRepository documentRepository,
+            // ... 其他 Repository
+            DocumentParserPort documentParserPort,
+            RecursiveChunkingStrategy recursiveChunkingStrategy,
+            DocumentContentStorePort documentContentStorePort,
+            IngestionJobRepository ingestionJobRepository,
+            EmbeddingPort embeddingPort,
+            VectorStorePort vectorStorePort,
+            ChunkSearchIndexPort chunkSearchIndexPort,
+            AccessControlPort accessControlPort,
+            @Value("${synapse.rag.top-k:5}") int topK,
+            // ... 更多配置参数
+    ) {
+        return new KnowledgeBaseApplicationService(
+            knowledgeBaseRepository, documentRepository,
+            // ... 所有依赖
+        );
+    }
+}
+```
+
+### 巨型构造函数
+
+`KnowledgeBaseApplicationService` 的构造函数有十几个参数。这不是代码坏味道，而是**显式依赖声明**——你一眼就能看出这个服务需要哪些能力。
+
+如果用 `@Autowired` 字段注入，依赖关系藏在类内部，不容易看出来。

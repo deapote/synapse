@@ -1,0 +1,123 @@
+---
+title: Reactive 桥接模式
+description: WebFlux Mono/Flux、Application 层同步、.block() 桥接的实现解析
+---
+
+# Reactive 桥接模式
+
+Controller 返回 Mono/Flux（Reactive），Application Service 为同步方法。本节说明该设计的技术原因及桥接实现。
+
+## WebFlux 基础
+
+Spring WebFlux 基于 Reactor 库，核心类型：
+
+| 类型 | 含义 |
+|------|------|
+| `Mono<T>` | 异步返回 0 或 1 个值 |
+| `Flux<T>` | 异步返回 0 到 N 个值 |
+
+```java
+Mono<User> userMono = userRepository.findById("123");
+userMono.subscribe(user -> System.out.println(user.getName()));
+```
+
+Mono/Flux 为惰性求值——定义流水线但不执行，直至订阅发生。
+
+## Application 层同步的设计原因
+
+| 原因 | 说明 |
+|------|------|
+| 领域模型与线程无关 | `Document.transitionTo()` 不依赖执行线程 |
+| 测试简单 | 同步方法直接调用，无需 `StepVerifier` 或 `block()` |
+| 事务边界清晰 | 一个方法一个事务，无 Reactive 事务传播问题 |
+| 代码可读 | 顺序执行，无 `.flatMap()`、`.zipWith()` 嵌套 |
+| 技术无关 | Application 层不绑定 Reactor，可复用于 Servlet 项目 |
+
+```java
+// Application 层 —— 纯同步
+public DocumentId ingest(IngestDocumentCommand command) {
+    KnowledgeBase kb = requireKnowledgeBase(command.knowledgeBaseId());
+    accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+    // ... 顺序执行
+    return document.getId();
+}
+```
+
+## Reactive 边界
+
+```
+Browser ──HTTP──→ Controller (Mono/Flux) ──→ SaTokenReactorBridge.blockingCall()
+                                                        ↓
+                                               Schedulers.boundedElastic()
+                                                        ↓
+                                               Application Service (同步)
+                                                        ↓
+                                               Repository / Port (同步)
+                                                        ↓
+                                               MongoDB / Ollama (阻塞 IO)
+```
+
+- **Adapter-In（Controller）**：返回 `Mono<T>` / `Flux<T>`，接收 WebFlux 请求
+- **Application Service**：同步方法，返回领域对象
+- **Adapter-Out（Repository）**：同步实现，Spring Data MongoDB 为同步 API
+
+## SaTokenReactorBridge 实现
+
+```java
+// SaTokenReactorBridge.java
+final class SaTokenReactorBridge {
+
+    static <T> Mono<T> blockingCall(CheckedSupplier<T> supplier) {
+        return SaReactorHolder.sync(() -> {
+                    try {
+                        return supplier.get();
+                    } catch (RuntimeException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+}
+```
+
+### `SaReactorHolder.sync()` —— 保存 Sa-Token 上下文
+
+Sa-Token 的登录信息存储在 `ThreadLocal` 中。WebFlux 为事件驱动模型，请求处理可能在不同线程间切换，`ThreadLocal` 会丢失。
+
+`SaReactorHolder.sync()` 把当前线程的 Sa-Token 上下文复制到执行 `supplier` 的线程，确保 `StpUtil.getLoginId()` 在弹性线程池中仍可获取用户 ID。
+
+### `subscribeOn(Schedulers.boundedElastic())` —— 避免阻塞 Netty
+
+WebFlux 默认运行在 Netty 事件循环线程上，线程数极少（通常等于 CPU 核心数），不可阻塞。同步代码直接跑在 Netty 线程上时，一个慢查询即可导致整服务器停止响应新请求。
+
+`Schedulers.boundedElastic()` 创建弹性线程池：
+- 线程数按需增长，有上限
+- 阻塞操作（DB 查询、HTTP 调用）在此执行
+- Netty 线程保持自由，继续接收新请求
+
+### `CheckedSupplier` —— 允许抛出受检异常
+
+Java 的 `Supplier` 不允许抛出受检异常。`CheckedSupplier` 扩展了该限制，使 Application Service 可自然抛出 `DomainException`。
+
+## 桥接方式对比
+
+```java
+// 标准写法
+@GetMapping("/api/kb")
+public Mono<List<KnowledgeBase>> list() {
+    return Mono.fromCallable(() -> service.listAll())
+        .subscribeOn(Schedulers.boundedElastic());
+}
+```
+
+两种写法等效：
+- `Mono.fromCallable() + subscribeOn` —— 更标准，无需 SaTokenReactorBridge
+- `SaTokenReactorBridge.blockingCall()` —— 额外保存 Sa-Token 上下文
+
+`blockingCall()` 封装了 `SaReactorHolder.sync()`，为 Sa-Token + WebFlux 的专用桥接。若使用 JWT + WebFlux，则无需该桥接。
+
+## Netty 事件循环阻塞的影响
+
+`subscribeOn(Schedulers.boundedElastic())` 将阻塞工作从 Netty 线程转移到专用线程池，防止事件循环线程被阻塞导致请求处理停滞。

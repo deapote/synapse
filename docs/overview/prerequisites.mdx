@@ -1,0 +1,48 @@
+---
+title: 前置知识
+description: 阅读本文档所需的技术背景
+---
+
+# 前置知识
+
+本文档假设读者具备 Spring Boot CRUD 开发经验。
+
+## 必备基础
+
+| 知识 | 要求 | 在文档中的使用场景 |
+|------|------|-------------------|
+| Java 基础 | 类、接口、泛型、Stream API | 所有代码示例 |
+| Spring Boot | Controller + Service + Repository 的 CRUD 开发 | 所有后端代码 |
+| Maven | 添加依赖、执行 `mvn spring-boot:run` | 项目构建 |
+| HTTP / REST | GET/POST/DELETE、状态码、JSON | API 设计说明 |
+| Git | clone、commit、push | 源码获取 |
+
+## 非必需但有助于理解
+
+| 知识 | 与本文档的关联 | 缺失时的影响 |
+|------|---------------|-------------|
+| MongoDB 基础 | 元数据存储 | 不影响阅读，数据模型理解稍慢 |
+| Vue 3 基础 | 前端实现 | 可只关注后端部分 |
+| Docker 基础 | 启动 MongoDB 和 Milvus | 本文档提供可直接复制的命令 |
+
+## 文档中从零讲解的概念
+
+以下概念无需预先掌握，文档会在首次出现时说明：
+
+- RAG / 向量检索
+- DDD / 六边形架构
+- Spring WebFlux / Mono / Flux
+- Sa-Token
+- LangChain4j
+- Milvus
+- SSE（Server-Sent Events）
+
+## 知识缺口的影响
+
+| 缺失知识 | 影响 |
+|---------|------|
+| 无 Spring Boot CRUD 经验 | 无法跟上代码示例 |
+| 不理解接口（interface） | 无法理解"端口"概念 |
+| 不熟悉泛型 | 无法理解 `Optional<UserAccount>`、`Mono<LoginResponse>` |
+| 不会 Stream API | 无法理解 `stream().map().collect()` 等操作 |
+| 不熟悉 Maven | 无法编译运行项目 |

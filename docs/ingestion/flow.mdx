@@ -1,0 +1,172 @@
+---
+title: 完整链路
+description: 从上传请求到文档可检索的完整旅程
+---
+
+# 文档上传与摄入 —— 完整链路
+
+文档摄入分为两个阶段：**同步上传阶段**和**异步处理阶段**。
+
+## 阶段1：同步上传
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant DocumentController
+    participant IngestUseCase
+    participant DocumentRepo
+    participant GridFS
+    participant JobRepo
+
+    Browser->>DocumentController: POST /documents (multipart PDF)
+    DocumentController->>DocumentController: 校验文件（大小/格式/MIME）
+    DocumentController->>DocumentController: 计算 SHA-256 contentHash
+
+    DocumentController->>IngestUseCase: ingest(command)
+
+    IngestUseCase->>IngestUseCase: 重复检查（同kbId+contentHash）
+
+    IngestUseCase->>DocumentRepo: save(Document.create(PENDING))
+    DocumentRepo-->>IngestUseCase: Document (PENDING)
+
+    IngestUseCase->>GridFS: store(rawContent)
+    GridFS-->>IngestUseCase: contentObjectId
+    IngestUseCase->>DocumentRepo: attachContentObject(contentObjectId)
+
+    IngestUseCase->>JobRepo: save(IngestionJob.create(QUEUED))
+    JobRepo-->>IngestUseCase: IngestionJob
+
+    IngestUseCase-->>DocumentController: DocumentId
+    DocumentController-->>Browser: 200 OK + DocumentResponse(PENDING)
+```
+
+### 分步设计的原因
+
+1. **用户体验**：上传大文件可能需要几秒，如果等处理完再返回，用户会以为系统卡死了
+2. **资源隔离**：上传是网络 I/O，处理是 CPU/GPU 密集型，分开可以避免互相影响
+3. **可恢复性**：如果处理失败，用户可以看到失败原因，选择重试
+
+## 阶段2：异步处理
+
+```mermaid
+sequenceDiagram
+    participant Worker
+    participant JobRepo
+    participant DocumentRepo
+    participant Tika
+    participant Chunker
+    participant Embedding
+    participant Milvus
+    participant MongoIndex
+
+    Worker->>Worker: @Scheduled 每1秒 poll()
+    Worker->>JobRepo: claimNext(workerId, leaseDuration)
+    JobRepo-->>Worker: IngestionJob (RUNNING)
+    Note over Worker,JobRepo: MongoDB findAndModify 原子锁
+
+    Worker->>DocumentRepo: findById(documentId)
+    DocumentRepo-->>Worker: Document
+
+    Worker->>DocumentRepo: transitionTo(PROCESSING)
+
+    Worker->>GridFS: open(contentObjectId)
+    GridFS-->>Worker: InputStream
+
+    Worker->>Tika: parse(inputStream, fileName)
+    Tika-->>Worker: text (String)
+
+    Worker->>Chunker: split(text)
+    Chunker-->>Worker: List<DocumentChunk>
+
+    Worker->>Embedding: embed(chunks)
+    Embedding-->>Worker: List<float[]>
+
+    par 并行存储
+        Worker->>Milvus: store(vectors)
+        Milvus-->>Worker: ok
+    and
+        Worker->>MongoIndex: store(chunks)
+        MongoIndex-->>Worker: ok
+    end
+
+    Worker->>DocumentRepo: setChunkCount(chunks.size())
+    Worker->>DocumentRepo: transitionTo(COMPLETED)
+
+    Worker->>GridFS: delete(contentObjectId)
+```
+
+### 失败处理流程
+
+```mermaid
+graph TD
+    A[处理开始] --> B{解析失败?}
+    B -->|是| C[记录失败原因]
+    C --> D{重试次数 < 3?}
+    D -->|是| E[markRetrying: 30s/2min 退避]
+    E --> F[回到 QUEUED]
+    D -->|否| G[markFailed: 终态]
+    B -->|否| H{向量化失败?}
+    H -->|是| C
+    H -->|否| I{Milvus 写入失败?}
+    I -->|是| J[清理已写索引]
+    J --> C
+    I -->|否| K[COMPLETED]
+```
+
+## 代码路径标注
+
+### 同步上传阶段
+
+| 步骤 | 代码位置 | 作用 |
+|------|---------|------|
+| 1 | `DocumentController.java:upload()` | 接收 multipart 请求，用 `DataBufferUtils.join()` 读取文件 |
+| 2 | `DocumentController.java:upload()` | 校验文件大小、扩展名、Content-Type |
+| 3 | `DocumentController.java:upload()` | SHA-256 计算 contentHash |
+| 4 | `KnowledgeBaseApplicationService.java:ingest()` | 重复内容检查（同 kbId + contentHash） |
+| 5 | `KnowledgeBaseApplicationService.java:ingest()` | `Document.create()` 创建 PENDING 文档 |
+| 6 | `KnowledgeBaseApplicationService.java:ingest()` | `documentContentStorePort.store()` 存 GridFS |
+| 7 | `KnowledgeBaseApplicationService.java:ingest()` | `document.attachContentObject(contentObjectId)` |
+| 8 | `KnowledgeBaseApplicationService.java:ingest()` | `documentRepository.save(document)` |
+| 9 | `KnowledgeBaseApplicationService.java:ingest()` | `ingestionJobRepository.save(IngestionJob.create())` |
+
+### 异步处理阶段
+
+| 步骤 | 代码位置 | 作用 |
+|------|---------|------|
+| 1 | `IngestionJobWorker.java:poll()` | `@Scheduled` 定时触发 |
+| 2 | `MongoIngestionJobRepository.java:claimNext()` | `findAndModify` 原子锁认领任务 |
+| 3 | `KnowledgeBaseApplicationService.java:runIngestionTask()` | 获取文档并处理 |
+| 4 | `KnowledgeBaseApplicationService.java:processDocument()` | `transitionTo(PROCESSING)` |
+| 5 | `KnowledgeBaseApplicationService.java:parseDocumentChunks()` | `documentContentStorePort.open()` 读取 GridFS |
+| 6 | `ApacheTikaDocumentParserAdapter.java:parse()` | Tika 解析文档 |
+| 7 | `RecursiveChunkingStrategy.java:split()` | 语义分块 |
+| 8 | `OllamaEmbeddingAdapter.java:embed()` | Ollama 向量化 |
+| 9 | `MilvusVectorStoreAdapter.java:store()` | 存储向量 |
+| 10 | `MongoChunkSearchIndexAdapter.java:store()` | 存储 BM25 索引 |
+| 11 | `KnowledgeBaseApplicationService.java:processDocument()` | `setChunkCount()` + `transitionTo(COMPLETED)` |
+| 12 | `KnowledgeBaseApplicationService.java:runIngestionTask()` | 清理 GridFS 原始内容 |
+
+## 补偿逻辑
+
+文档摄入有多个保存步骤，每一步都可能失败。如果后面步骤失败，前面步骤的数据需要回滚：
+
+```java
+// ingest() 方法中的补偿逻辑
+String contentObjectId = documentContentStorePort.store(...);
+try {
+    document = documentRepository.save(document);
+} catch (RuntimeException e) {
+    // 保存文档失败 → 回滚 GridFS
+    documentContentStorePort.delete(contentObjectId);
+    throw e;
+}
+
+try {
+    ingestionJobRepository.save(IngestionJob.create(...));
+} catch (RuntimeException e) {
+    // 保存任务失败 → 回滚文档和 GridFS
+    documentRepository.deleteById(document.getId());
+    documentContentStorePort.delete(contentObjectId);
+    throw e;
+}
+```

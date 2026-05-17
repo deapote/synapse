@@ -1,0 +1,88 @@
+---
+title: Adapter-Out 层
+description: QueryRewrite、StreamingLlm、向量检索、关键词检索
+---
+
+# 问答检索 —— Adapter-Out 层
+
+## OllamaQueryRewriteAdapter
+
+文件：`synapse-kb-adapter/.../out/llm/OllamaQueryRewriteAdapter.java`
+
+```java
+@Component
+public class OllamaQueryRewriteAdapter implements QueryRewritePort {
+    private final OllamaChatModel chatModel;
+
+    @Override
+    public String rewrite(String query) {
+        String prompt = """
+            请优化以下用户问题，使其更适合文档检索。
+            保持原意不变，只改进表述清晰度和检索友好性。
+            直接返回优化后的问题，不要添加解释。
+
+            用户问题：%s
+            """.formatted(query);
+
+        String rewritten = chatModel.chat(prompt);
+        return rewritten.trim();
+    }
+}
+```
+
+Query 改写用同一个 LLM（qwen2.5:7b），但用不同的 prompt。改写后的问题通常更精确、更完整。
+
+## OllamaStreamingLlmAdapter
+
+文件：`synapse-kb-adapter/.../out/llm/OllamaStreamingLlmAdapter.java`
+
+```java
+@Component
+public class OllamaStreamingLlmAdapter implements StreamingLlmPort {
+    private final OllamaStreamingChatModel streamingChatModel;
+
+    @Override
+    public Stream<String> generateStream(String prompt) {
+        LinkedBlockingQueue<String> queue = new LinkedBlockingQueue<>();
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+
+        // 用虚拟线程异步消费 LLM 流
+        Thread.startVirtualThread(() -> {
+            streamingChatModel.generate(prompt, new StreamingResponseHandler<AiMessage>() {
+                @Override
+                public void onNext(String token) {
+                    if (!cancelled.get()) {
+                        queue.offer(token);
+                    }
+                }
+
+                @Override
+                public void onComplete(Response<AiMessage> response) {
+                    queue.offer("__COMPLETE__");
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    queue.offer("__ERROR__" + error.getMessage());
+                }
+            });
+        });
+
+        return StreamSupport.stream(new TokenSpliterator(queue), false)
+            .onClose(() -> {
+                cancelled.set(true);
+                queue.clear();
+            });
+    }
+}
+```
+
+### LangChain4j 回调 → JDK Stream 桥接
+
+LangChain4j 的流式 API 是回调式的（`onNext`、`onComplete`、`onError`），但 Application 层需要 JDK 的 `Stream<String>`。这个适配器做了桥接：
+
+1. 创建 `LinkedBlockingQueue` 作为缓冲
+2. 用虚拟线程异步消费 LangChain4j 的回调
+3. 把 token 放入队列
+4. 用 `StreamSpliterator` 从队列中读取，包装成 JDK Stream
+5. `Stream.onClose()` 中设置取消标志，停止 LLM 生成

@@ -1,0 +1,265 @@
+---
+title: Application 层
+description: 用例编排、端口定义、AuthApplicationService
+---
+
+# 认证登录 —— Application 层
+
+Application 层负责**用例编排**：协调多个端口完成一个业务场景。它不依赖任何具体技术，只面对纯净的 Java 接口。
+
+## 端口定义
+
+### 入站端口（Driving Ports）
+
+定义在 `synapse-auth-application/.../port/in/`，命名 `*UseCase`。
+
+文件：`synapse-auth-application/.../port/in/AuthenticationUseCase.java`
+
+```java
+public interface AuthenticationUseCase {
+    LoginResult login(LoginCommand command);
+    void logout();
+    CurrentUser currentUser();
+
+    // 命令和结果用 Java record 定义，简洁不可变
+    record LoginCommand(String username, String password) {}
+    
+    record LoginResult(String userId, String username, String displayName,
+                       Set<RoleName> roles, Set<AuthPermission> permissions) {}
+    
+    record CurrentUser(UserId id, String username, String displayName,
+                       Set<RoleName> roles, Set<AuthPermission> permissions, 
+                       Instant createdAt) {}
+}
+```
+
+**选用 record 的原因**
+
+- 不可变：创建后不能修改
+- 自动生成构造函数、getter、equals、hashCode、toString
+- 简洁：一行定义一个 DTO
+
+文件：`synapse-auth-application/.../port/in/UserAdminUseCase.java`
+
+```java
+public interface UserAdminUseCase {
+    UserView createUser(CreateUserCommand command);
+    List<UserView> listUsers(int page, int size);
+    UserView assignRoles(String userId, Set<RoleName> roles);
+    UserView setEnabled(String userId, boolean enabled);
+    RoleView assignRolePermissions(RoleName roleName, Set<AuthPermission> permissions);
+    List<RoleView> listRoles();
+
+    record CreateUserCommand(String username, String displayName, 
+                             String password, Set<RoleName> roles) {}
+    record UserView(String id, String username, String displayName,
+                    Set<RoleName> roles, boolean enabled, Instant createdAt) {}
+    record RoleView(RoleName name, Set<AuthPermission> permissions) {}
+}
+```
+
+### 出站端口（Driven Ports）
+
+定义在 `synapse-auth-application/.../port/out/`，命名 `*Port`。
+
+文件：`synapse-auth-application/.../port/out/LoginSessionPort.java`
+
+```java
+public interface LoginSessionPort {
+    void login(UserId userId);           // 创建会话
+    void logout();                        // 销毁会话
+    Optional<UserId> currentUserId();     // 获取当前用户ID
+}
+```
+
+文件：`synapse-auth-application/.../port/out/PasswordHasherPort.java`
+
+```java
+public interface PasswordHasherPort {
+    String hash(String rawPassword);                    // 哈希密码
+    boolean matches(String rawPassword, String passwordHash);  // 比对密码
+}
+```
+
+**端口设计的关键原则**：
+
+- 端口命名描述"能力"，而不是"怎么实现"
+- `LoginSessionPort` 不说"用 Sa-Token"，只说"我需要会话管理的能力"
+- `PasswordHasherPort` 不说"用 BCrypt"，只说"我需要哈希和比对密码的能力"
+
+这样，测试时可以轻松 mock：
+
+```java
+// 测试时不需要真的连 Sa-Token 或 BCrypt
+LoginSessionPort mockSession = Mockito.mock(LoginSessionPort.class);
+PasswordHasherPort mockHasher = Mockito.mock(PasswordHasherPort.class);
+```
+
+## AuthApplicationService —— 应用服务实现
+
+文件：`synapse-auth-application/.../port/service/AuthApplicationService.java`
+
+```java
+public class AuthApplicationService implements AuthenticationUseCase, UserAdminUseCase {
+    private final UserAccountRepository userRepository;
+    private final RoleDefinitionRepository roleRepository;
+    private final PasswordHasherPort passwordHasher;
+    private final LoginSessionPort loginSession;
+
+    // 构造函数注入所有依赖
+    public AuthApplicationService(UserAccountRepository userRepository,
+                                  RoleDefinitionRepository roleRepository,
+                                  PasswordHasherPort passwordHasher,
+                                  LoginSessionPort loginSession) {
+        this.userRepository = userRepository;
+        this.roleRepository = roleRepository;
+        this.passwordHasher = passwordHasher;
+        this.loginSession = loginSession;
+    }
+}
+```
+
+**注意**：没有 `@Autowired`，没有 `@Service`。这个类是一个纯 Java 类，Spring 注解在 Config 层添加。
+
+### login() 方法
+
+```java
+@Override
+public LoginResult login(LoginCommand command) {
+    // 1. 参数校验
+    if (command.username() == null || command.username().isBlank()) {
+        throw new DomainException("用户名不能为空");
+    }
+    if (command.password() == null || command.password().isBlank()) {
+        throw new DomainException("密码不能为空");
+    }
+
+    // 2. 查询用户
+    UserAccount user = userRepository.findByUsername(command.username().trim())
+        .orElseThrow(() -> new DomainException("用户名或密码错误"));
+
+    // 3. 校验密码（不区分用户名错误还是密码错误，防止枚举攻击）
+    if (!user.isEnabled() || !passwordHasher.matches(command.password(), user.getPasswordHash())) {
+        throw new DomainException("用户名或密码错误");
+    }
+
+    // 4. 创建会话
+    loginSession.login(user.getId());
+
+    // 5. 聚合权限并返回
+    return new LoginResult(
+        user.getId().value(),
+        user.getUsername(),
+        user.getDisplayName(),
+        user.getRoles(),
+        permissionsOf(user)
+    );
+}
+```
+
+**这个方法展示了 Application 层的典型模式**：
+
+1. **参数校验**：基本参数检查（非空、格式等）
+2. **查询领域对象**：通过 Repository 获取聚合根
+3. **执行业务操作**：调用领域对象的方法或端口
+4. **返回结果**：把领域对象转换成 View/DTO
+
+### createUser() 方法
+
+```java
+@Override
+public UserView createUser(CreateUserCommand command) {
+    String username = command.username() == null ? null : command.username().trim();
+    if (username == null || username.isBlank()) 
+        throw new DomainException("用户名不能为空");
+    if (command.password() == null || command.password().length() < 8) 
+        throw new DomainException("密码长度至少8位");
+    if (userRepository.existsByUsername(username)) 
+        throw new DomainException("用户名已存在");
+
+    Set<RoleName> roles = command.roles() == null || command.roles().isEmpty()
+            ? EnumSet.of(RoleName.USER) 
+            : EnumSet.copyOf(command.roles());
+
+    UserAccount user = UserAccount.create(username, command.displayName(),
+            passwordHasher.hash(command.password()), roles);
+    return toView(userRepository.save(user));
+}
+```
+
+**流程**：查重 → 哈希密码 → 创建领域对象 → 保存 → 转 View。
+
+### permissionsOf() 方法
+
+```java
+private Set<AuthPermission> permissionsOf(UserAccount user) {
+    return user.getRoles().stream()
+        .flatMap(role -> roleRepository.findByName(role).stream())
+        .flatMap(role -> role.getPermissions().stream())
+        .collect(Collectors.toUnmodifiableSet());
+}
+```
+
+**权限聚合逻辑**：
+
+1. 遍历用户的所有角色
+2. 对每个角色，查 `RoleDefinition` 获取权限集合
+3. 把所有权限合并成一个 Set
+4. 用 `toUnmodifiableSet()` 返回不可变集合
+
+例如：用户有 `ADMIN` 和 `USER` 两个角色，`ADMIN` 有 `[KB_READ, KB_WRITE, KB_DELETE, AUTH_ADMIN]`，`USER` 有 `[KB_READ, KB_WRITE]`，最终权限集合是 `[KB_READ, KB_WRITE, KB_DELETE, AUTH_ADMIN]`。
+
+### toView() 方法
+
+```java
+private UserView toView(UserAccount user) {
+    return new UserView(
+        user.getId().value(),
+        user.getUsername(),
+        user.getDisplayName(),
+        user.getRoles(),
+        user.isEnabled(),
+        user.getCreatedAt()
+    );
+}
+```
+
+Application Service 不负责直接返回领域对象给外部，而是转换成 **View/DTO**。原因是：
+- 控制暴露哪些字段（不暴露 passwordHash）
+- 把值对象转成 String（方便序列化）
+- 领域对象可能在后续被修改，返回副本更安全
+
+## Application 层的技术隔离
+
+打开 `synapse-auth-application/pom.xml`，你会发现：
+
+- 没有 `spring-boot-starter`
+- 没有 `spring-webflux`
+- 没有 `reactor-core`
+- 没有 `sa-token`
+
+它只依赖：
+- `synapse-auth-domain`
+- `synapse-shared`
+- `slf4j`（日志）
+
+这样 Application 层可以**独立测试**，不需要启动 Spring 容器：
+
+```java
+@Test
+void shouldLoginSuccessfully() {
+    // 准备
+    UserAccountRepository mockRepo = mock(UserAccountRepository.class);
+    when(mockRepo.findByUsername("admin")).thenReturn(Optional.of(testUser));
+    
+    AuthApplicationService service = new AuthApplicationService(
+        mockRepo, mockRoleRepo, mockHasher, mockSession
+    );
+    
+    // 执行
+    LoginResult result = service.login(new LoginCommand("admin", "password"));
+    
+    // 验证
+    assertEquals("admin", result.username());
+}
+```

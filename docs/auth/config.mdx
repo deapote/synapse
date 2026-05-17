@@ -1,0 +1,141 @@
+---
+title: Config 层
+description: Bean 组装、种子数据初始化、安全过滤器配置
+---
+
+# 认证登录 —— Config 层
+
+Config 层的职责是**组装**：把 Application Service、Repository 实现、Port 实现连接起来，形成可运行的系统。
+
+## AuthBeanConfig
+
+文件：`synapse-auth-config/.../AuthBeanConfig.java`
+
+```java
+@Configuration
+public class AuthBeanConfig {
+    @Bean
+    public AuthApplicationService authApplicationService(
+            UserAccountRepository userRepository,
+            RoleDefinitionRepository roleRepository,
+            PasswordHasherPort passwordHasher,
+            LoginSessionPort loginSession) {
+        return new AuthApplicationService(
+            userRepository, roleRepository, passwordHasher, loginSession
+        );
+    }
+}
+```
+
+**手动装配的原因**
+
+`AuthApplicationService` 没有 `@Service` 注解，Spring 不会自动扫描它。Config 层用 `@Bean` 方法显式创建它，并注入所有依赖。
+
+这样做的好处：
+- Domain 和 Application 层完全没有 Spring 注解，保持纯净
+- 依赖关系一目了然：看 Config 层就知道这个 Service 需要哪些依赖
+- 测试时可以绕过 Spring，直接 `new AuthApplicationService(...)`
+
+**构造函数注入 vs @Autowired：**
+
+本项目全部使用**构造函数注入**（通过 `@Bean` 方法的参数），不用字段注入。原因：
+- 依赖必须传进来，不能为 null
+- 一目了然：看构造函数就知道依赖有哪些
+- 方便单元测试：直接 new，不需要反射
+
+## AuthDataInitializer
+
+文件：`synapse-auth-config/.../AuthDataInitializer.java`
+
+```java
+@Configuration
+public class AuthDataInitializer {
+    private static final Logger log = LoggerFactory.getLogger(AuthDataInitializer.class);
+
+    @Bean
+    ApplicationRunner seedAuthData(
+            RoleDefinitionRepository roleRepository,
+            UserAccountRepository userRepository,
+            PasswordHasherPort passwordHasher,
+            Environment environment,
+            @Value("${synapse.auth.bootstrap-admin.username:admin}") String adminUsername,
+            @Value("${synapse.auth.bootstrap-admin.password:ChangeMe123!}") String adminPassword) {
+        return args -> {
+            try {
+                // 安全检查：生产环境不能用默认密码
+                if ("ChangeMe123!".equals(adminPassword)) {
+                    if (isProduction(environment)) {
+                        throw new IllegalStateException(
+                            "生产环境必须覆盖 synapse.auth.bootstrap-admin.password"
+                        );
+                    }
+                    log.warn("当前使用默认 bootstrap admin 密码，请在生产环境覆盖");
+                }
+
+                // 1. 初始化角色定义
+                if (roleRepository.findByName(RoleName.ADMIN).isEmpty()) {
+                    roleRepository.save(RoleDefinition.create(
+                        RoleName.ADMIN, EnumSet.allOf(AuthPermission.class)));
+                }
+                if (roleRepository.findByName(RoleName.USER).isEmpty()) {
+                    roleRepository.save(RoleDefinition.create(
+                        RoleName.USER, EnumSet.of(KB_READ, KB_WRITE)));
+                }
+
+                // 2. 初始化管理员用户
+                if (!userRepository.existsByUsername(adminUsername)) {
+                    UserAccount admin = UserAccount.create(
+                        adminUsername, "Administrator",
+                        passwordHasher.hash(adminPassword),
+                        EnumSet.of(RoleName.ADMIN)
+                    );
+                    userRepository.save(admin);
+                }
+            } catch (DataAccessException e) {
+                log.warn("MongoDB 不可用，跳过认证种子数据初始化: {}", e.getMessage());
+            }
+        };
+    }
+
+    private boolean isProduction(Environment environment) {
+        return Arrays.stream(environment.getActiveProfiles())
+            .anyMatch(p -> "prod".equalsIgnoreCase(p) || "production".equalsIgnoreCase(p));
+    }
+}
+```
+
+**初始化器职责**
+
+1. **安全检查**：如果生产环境使用默认密码，直接抛异常阻止启动
+2. **初始化角色**：`ADMIN` 拥有所有权限，`USER` 只有 `KB_READ` 和 `KB_WRITE`
+3. **初始化管理员**：如果 admin 用户不存在，创建一个
+4. **容错**：如果 MongoDB 不可用（比如启动顺序问题），跳过初始化，不阻止启动
+
+## SaTokenSecurityConfig
+
+文件：`synapse-auth-config/.../SaTokenSecurityConfig.java`
+
+```java
+@Configuration
+public class SaTokenSecurityConfig {
+    @Bean
+    public SaReactorFilter saReactorFilter() {
+        return new SaReactorFilter()
+            .addInclude("/api/**")           // 拦截所有 /api/** 请求
+            .addExclude("/api/auth/login")   // 排除登录接口
+            .setAuth(obj -> SaRouter.match(
+                "/api/**",
+                "/api/auth/login",
+                StpUtil::checkLogin           // 未登录就抛异常
+            ));
+    }
+}
+```
+
+**过滤器职责**
+
+- 拦截所有 `/api/**` 请求
+- 排除 `/api/auth/login`（登录不需要先登录）
+- 其他请求调用 `StpUtil.checkLogin()`，未登录就返回 401
+
+注意：这里只检查**是否登录**，不检查**具体权限**。具体权限检查在 Controller 的方法里（`adminCall()` 里的 `StpUtil.checkPermission()`）。

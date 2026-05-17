@@ -1,0 +1,242 @@
+---
+title: Adapter-Out 层
+description: Repository 实现、密码哈希、会话管理、权限数据源
+---
+
+# 认证登录 —— Adapter-Out 层
+
+Adapter-Out 层负责实现 Application 层定义的出站端口。它引入具体技术：Spring Data MongoDB、Spring Security Crypto、Sa-Token。
+
+## SaTokenLoginSessionAdapter
+
+文件：`synapse-auth-adapter/.../out/security/SaTokenLoginSessionAdapter.java`
+
+```java
+@Component
+public class SaTokenLoginSessionAdapter implements LoginSessionPort {
+    @Override
+    public void login(UserId userId) {
+        StpUtil.login(userId.value());
+    }
+
+    @Override
+    public void logout() {
+        StpUtil.logout();
+    }
+
+    @Override
+    public Optional<UserId> currentUserId() {
+        if (!StpUtil.isLogin()) {
+            return Optional.empty();
+        }
+        return Optional.of(new UserId(StpUtil.getLoginIdAsString()));
+    }
+}
+```
+
+**适配器职责**
+
+- 把 Application 层的 `LoginSessionPort` 接口映射到 Sa-Token 的 `StpUtil`
+- Application 层只知道"创建会话"，不知道具体是 Sa-Token、Spring Security 还是 JWT
+- 如果想换成 JWT，只需要写一个新的 `JwtLoginSessionAdapter`，不需要改 Application 层
+
+## BCryptPasswordHasherAdapter
+
+文件：`synapse-auth-adapter/.../out/security/BCryptPasswordHasherAdapter.java`
+
+```java
+@Component
+public class BCryptPasswordHasherAdapter implements PasswordHasherPort {
+    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder(12);
+
+    @Override
+    public String hash(String rawPassword) {
+        return encoder.encode(rawPassword);
+    }
+
+    @Override
+    public boolean matches(String rawPassword, String passwordHash) {
+        return encoder.matches(rawPassword, passwordHash);
+    }
+}
+```
+
+**BCrypt 的工作方式：**
+
+1. **哈希时**：BCrypt 生成一个随机 salt，把 salt 和密码一起哈希，输出 `$2a$12$...` 格式的字符串
+2. **比对时**：从哈希字符串中提取 salt，用同样的方式哈希输入的密码，比较结果
+
+**strength=12 的设定依据**
+
+`BCryptPasswordEncoder(12)` 表示迭代 2^12 = 4096 次。数值越大，计算越慢，破解难度越高。12 是一个平衡点：哈希耗时约 250ms，用户体验可接受，暴力破解成本极高。
+
+<Danger>
+  永远不要在代码里写死密码，永远不要把明文密码存入数据库。BCrypt 哈希是行业最佳实践。
+</Danger>
+
+## SaTokenPermissionAdapter
+
+文件：`synapse-auth-adapter/.../out/security/SaTokenPermissionAdapter.java`
+
+```java
+@Component
+public class SaTokenPermissionAdapter implements StpInterface {
+    private final UserAccountRepository userRepository;
+    private final RoleDefinitionRepository roleRepository;
+
+    public SaTokenPermissionAdapter(UserAccountRepository userRepository,
+                                    RoleDefinitionRepository roleRepository) {
+        this.userRepository = userRepository;
+        this.roleRepository = roleRepository;
+    }
+
+    @Override
+    public List<String> getPermissionList(Object loginId, String loginType) {
+        return userRepository.findById(new UserId(String.valueOf(loginId)))
+            .filter(UserAccount::isEnabled)
+            .stream()
+            .flatMap(user -> user.getRoles().stream())
+            .flatMap(role -> roleRepository.findByName(role).stream())
+            .flatMap(role -> role.getPermissions().stream())
+            .map(Enum::name)
+            .distinct()
+            .toList();
+    }
+
+    @Override
+    public List<String> getRoleList(Object loginId, String loginType) {
+        return userRepository.findById(new UserId(String.valueOf(loginId)))
+            .filter(UserAccount::isEnabled)
+            .stream()
+            .flatMap(user -> user.getRoles().stream())
+            .map(RoleName::name)
+            .toList();
+    }
+}
+```
+
+**这个适配器是 Sa-Token 的扩展点。**
+
+Sa-Token 的 `StpInterface` 是一个回调接口：当 Sa-Token 需要知道"当前用户有什么权限"时，会调用 `getPermissionList()`。我们在这个方法里查数据库，把用户的角色映射成权限列表。
+
+**权限实时查询 vs 缓存：**
+
+本项目选择每次实时查询数据库。优点是权限修改立即生效，缺点是每次鉴权都要查数据库。在生产环境中，可以考虑加缓存（如 Redis），但需要处理缓存失效问题。
+
+## MongoUserAccountRepository
+
+文件：`synapse-auth-adapter/.../out/persistence/MongoUserAccountRepository.java`
+
+```java
+@Component
+public class MongoUserAccountRepository implements UserAccountRepository {
+    private final UserAccountMongoRepository mongoRepository;
+
+    public MongoUserAccountRepository(UserAccountMongoRepository mongoRepository) {
+        this.mongoRepository = mongoRepository;
+    }
+
+    @Override
+    public UserAccount save(UserAccount user) {
+        try {
+            return toEntity(mongoRepository.save(toDocument(user)));
+        } catch (DuplicateKeyException e) {
+            throw new DomainException("用户名已存在", e);
+        }
+    }
+
+    @Override
+    public Optional<UserAccount> findByUsername(String username) {
+        return mongoRepository.findByUsername(username).map(this::toEntity);
+    }
+
+    @Override
+    public List<UserAccount> findAll(int page, int size) {
+        return mongoRepository.findAllBy(
+            PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
+        ).stream().map(this::toEntity).toList();
+    }
+
+    // ... 其他方法
+
+    private UserAccountDocument toDocument(UserAccount user) {
+        UserAccountDocument doc = new UserAccountDocument();
+        doc.setId(user.getId().value());
+        doc.setUsername(user.getUsername());
+        doc.setDisplayName(user.getDisplayName());
+        doc.setPasswordHash(user.getPasswordHash());
+        doc.setRoles(user.getRoles().stream().map(Enum::name).collect(Collectors.toSet()));
+        doc.setEnabled(user.isEnabled());
+        doc.setCreatedAt(user.getCreatedAt());
+        return doc;
+    }
+
+    private UserAccount toEntity(UserAccountDocument doc) {
+        Set<RoleName> roles = doc.getRoles() == null || doc.getRoles().isEmpty()
+            ? EnumSet.noneOf(RoleName.class)
+            : doc.getRoles().stream()
+                .map(RoleName::valueOf)
+                .collect(Collectors.toCollection(() -> EnumSet.noneOf(RoleName.class)));
+        return UserAccount.reconstruct(
+            new UserId(doc.getId()), doc.getUsername(), doc.getDisplayName(),
+            doc.getPasswordHash(), roles, doc.isEnabled(), doc.getCreatedAt()
+        );
+    }
+}
+```
+
+### 双层 Repository 模式
+
+注意这里有两层：
+
+1. **`UserAccountMongoRepository`**（Spring Data 接口）
+2. **`MongoUserAccountRepository`**（自定义实现，实现领域层的 `UserAccountRepository`）
+
+```java
+// Spring Data 接口，自动生成查询
+public interface UserAccountMongoRepository extends MongoRepository<UserAccountDocument, String> {
+    Optional<UserAccountDocument> findByUsername(String username);
+    boolean existsByUsername(String username);
+    List<UserAccountDocument> findAllBy(Pageable pageable);
+}
+```
+
+双层 Repository 的设计原因：
+
+- **Spring Data 接口** 负责和 MongoDB 交互（查询、保存）
+- **自定义实现** 负责领域对象和 MongoDB Document 之间的转换（`toDocument()` / `toEntity()`）
+- 领域层只依赖自定义实现，不依赖 Spring Data
+
+### 转换逻辑
+
+| 方向 | 转换 | 说明 |
+|------|------|------|
+| Entity → Document | `toDocument()` | `UserId` → `String`，`RoleName` → `String`，`EnumSet` → `Set<String>` |
+| Document → Entity | `toEntity()` | `String` → `UserId`，`String` → `RoleName`，`Set<String>` → `EnumSet` |
+
+转换时要注意：
+- 空集合处理：`null` 或空集转成 `EnumSet.noneOf()`
+- 异常处理：`DuplicateKeyException` 转成领域层的 `DomainException`
+
+## MongoRoleDefinitionRepository
+
+文件：`synapse-auth-adapter/.../out/persistence/MongoRoleDefinitionRepository.java`
+
+实现方式和 `MongoUserAccountRepository` 类似，也是双层 Repository 模式。
+
+```java
+@Component
+public class MongoRoleDefinitionRepository implements RoleDefinitionRepository {
+    private final RoleDefinitionMongoRepository mongoRepository;
+
+    @Override
+    public RoleDefinition save(RoleDefinition role) {
+        return toEntity(mongoRepository.save(toDocument(role)));
+    }
+
+    @Override
+    public Optional<RoleDefinition> findByName(RoleName name) {
+        return mongoRepository.findById(name.name()).map(this::toEntity);
+    }
+}
+```

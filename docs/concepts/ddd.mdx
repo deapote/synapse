@@ -1,0 +1,184 @@
+---
+title: DDD 简介
+description: 贫血模型的问题，充血模型的好处，聚合根、实体、值对象的区别
+---
+
+# DDD 简介
+
+DDD（Domain-Driven Design，领域驱动设计）是一种软件开发方法，核心思想是：**让代码结构反映业务概念**。
+
+## 贫血模型的问题
+
+常见的 Spring Boot 代码采用"贫血模型"：
+
+```java
+// 贫血模型：只有数据，没有行为
+public class User {
+    private Long id;
+    private String username;
+    private String password;
+    // ... 只有 getter/setter，没有任何业务逻辑
+}
+
+// 业务逻辑散落在 Service 里
+public class UserService {
+    public void register(String username, String password) {
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException("用户名不能为空");
+        }
+        if (password.length() < 8) {
+            throw new IllegalArgumentException("密码至少8位");
+        }
+        User user = new User();
+        user.setUsername(username);
+        user.setPassword(encrypt(password));
+        userRepository.save(user);
+    }
+}
+```
+
+**问题在哪里？**
+
+- `User` 类只是一个数据容器（DTO），没有任何自我保护能力
+- 业务规则散落在各个 Service 中，没有统一的地方管理
+- 如果有人绕过 `UserService.register()` 直接 `userRepository.save(new User())`，校验逻辑就被跳过了
+- 业务规则和数据分离，修改规则时需要到处找哪里用了这个规则
+
+## 充血模型
+
+DDD 提倡**充血模型**——数据和业务逻辑封装在一起：
+
+```java
+public class UserAccount {
+    private final UserId id;
+    private String username;
+    private String passwordHash;
+    private Set<RoleName> roles;
+
+    // 私有构造函数：外部不能直接 new
+    private UserAccount(...) { ... }
+
+    // 静态工厂方法：创建时必须通过校验
+    public static UserAccount create(String username, String passwordHash, Set<RoleName> roles) {
+        validateUsername(username);
+        if (passwordHash == null || passwordHash.isBlank()) {
+            throw new DomainException("密码哈希不能为空");
+        }
+        return new UserAccount(UserId.generate(), username, passwordHash, roles);
+    }
+
+    public void assignRoles(Set<RoleName> roles) {
+        if (roles == null || roles.isEmpty()) {
+            throw new DomainException("用户至少需要一个角色");
+        }
+        this.roles = EnumSet.copyOf(roles);
+    }
+
+    public void enable() { this.enabled = true; }
+    public void disable() { this.enabled = false; }
+}
+```
+
+**好处：**
+
+- `UserAccount` 自己负责校验，不可能创建出非法状态的对象
+- 业务规则集中在实体内部，而不是散落在 Service 中
+- 修改规则时只需改一个地方
+
+## 核心概念
+
+### 实体（Entity）
+
+**有唯一标识的对象**。两个属性完全相同的用户，如果 ID 不同，就是不同的实体。
+
+```java
+public class UserAccount {
+    private final UserId id;  // 唯一标识
+    // ...
+}
+```
+
+实体有生命周期：创建 → 修改 → 删除。业务操作会改变实体的状态。
+
+### 值对象（Value Object）
+
+**没有唯一标识，通过属性值判断是否相等**。比如金额、地址、颜色。
+
+```java
+// DocumentId 是值对象：两个 value 相同的 DocumentId 完全等价
+public record DocumentId(String value) {}
+```
+
+值对象应该是**不可变的**：创建后不能修改。需要改就创建新的。
+
+```java
+// 值对象用 Java record 天然不可变
+public record DocumentId(String value) {
+    public DocumentId {
+        if (value == null || value.isBlank()) {
+            throw new DomainException("文档ID不能为空");
+        }
+    }
+}
+```
+
+### 聚合根（Aggregate Root）
+
+**一组相关实体的入口**。外部代码只能通过聚合根操作这组实体，不能直接操作内部的实体。
+
+在 Synapse 中：
+- `UserAccount` 是聚合根（用户和角色的整体）
+- `Document` 是聚合根（文档和处理状态的组合）
+- `KnowledgeBase` 是聚合根（知识库和它的文档列表）
+
+```
+KnowledgeBase（聚合根）
+  ├── id
+  ├── name
+  ├── description
+  └── ownerUserId
+
+Document（聚合根，独立存在）
+  ├── id
+  ├── knowledgeBaseId（关联，不是包含）
+  ├── fileName
+  └── status
+```
+
+注意：`Document` 不是 `KnowledgeBase` 的内部对象，而是**独立的聚合根**，通过 `knowledgeBaseId` 关联。这是 DDD 的重要原则：聚合根之间通过 ID 引用，而不是直接持有对象引用。
+
+### 领域服务（Domain Service）
+
+**不属于任何实体的业务逻辑**。当业务操作涉及多个实体，或者只是纯算法时，使用领域服务。
+
+```java
+// RecursiveChunkingStrategy 是领域服务：
+// - 它不属于自己的数据（无状态）
+// - 它只是对传入的文本进行分块算法
+public class RecursiveChunkingStrategy {
+    public List<DocumentChunk> split(String text) { ... }
+}
+```
+
+判断标准：如果这个操作应该属于某个实体，就放实体里；如果它操作多个实体，或者只是纯算法，就用领域服务。
+
+### 仓储（Repository）
+
+**领域层只定义仓储接口**，具体实现在 Adapter 层。
+
+```java
+// 领域层：只定义接口
+public interface UserAccountRepository {
+    UserAccount save(UserAccount user);
+    Optional<UserAccount> findByUsername(String username);
+}
+
+// Adapter 层：具体实现
+@Component
+public class MongoUserAccountRepository implements UserAccountRepository {
+    // 用 Spring Data MongoDB 实现
+}
+```
+
+这样领域层完全不依赖任何框架，可以独立测试。
+

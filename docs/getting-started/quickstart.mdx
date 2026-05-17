@@ -1,0 +1,173 @@
+---
+title: 快速开始
+description: 本地开发环境搭建步骤
+---
+
+# 快速开始
+
+## 环境要求
+
+| 依赖 | 版本要求 | 说明 |
+|------|---------|------|
+| Java | 21+ | 后端运行环境 |
+| Maven | 3.9+ | 构建工具 |
+| Node.js | 18+ | 前端构建 |
+| MongoDB | 6.0+ | 元数据存储 |
+| Milvus | 2.3+ | 向量存储 |
+| Ollama | 最新 | LLM 和 Embedding 服务 |
+
+## 1. 克隆项目
+
+```bash
+git clone https://github.com/sunrise-choir/synapse.git
+cd synapse
+```
+
+## 2. 启动外部服务
+
+### MongoDB
+
+```bash
+docker run -d --name synapse-mongo \
+  -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=password \
+  mongo:6.0
+```
+
+验证容器运行：
+```bash
+docker ps | grep synapse-mongo
+```
+
+### Milvus
+
+```bash
+curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
+bash standalone_embed.sh start
+```
+
+验证容器运行：
+```bash
+docker ps | grep milvus
+```
+
+### Ollama
+
+macOS：
+```bash
+brew install ollama
+ollama serve
+```
+
+Linux：
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
+```
+
+在另一个终端拉取模型：
+```bash
+ollama pull qwen2.5:7b
+ollama pull gme-qwen2-vl:2b
+```
+
+验证模型列表：
+```bash
+ollama list
+```
+
+## 3. 启动后端
+
+```bash
+cd synapse-kb-bootstrap
+mvn spring-boot:run
+```
+
+后端默认运行在 `http://localhost:8082`。启动成功日志输出 `Tomcat started on port(s): 8082`。
+
+## 4. 启动前端
+
+在另一个终端：
+
+```bash
+cd synapse-frontend
+npm install
+npm run dev
+```
+
+前端默认运行在 `http://localhost:5173`。
+
+## 5. 首次登录
+
+访问 `http://localhost:5173`，使用默认管理员账号：
+
+| 字段 | 值 |
+|------|-----|
+| 用户名 | `admin` |
+| 密码 | `ChangeMe123!` |
+
+<Warning>
+  默认管理员密码仅用于开发环境，生产环境必须修改。
+</Warning>
+
+## 6. 验证服务
+
+登录后确认以下功能正常：
+
+- 页面正常加载，无报错
+- "知识库"菜单可见且可点击
+- "新建知识库"对话框可正常弹出
+- 知识库创建成功
+
+以上全部正常说明后端、前端、MongoDB 连接成功。
+
+## 常见问题
+
+### 端口被占用
+
+```bash
+lsof -i :8082  # 后端端口
+lsof -i :5173  # 前端端口
+lsof -i :27017 # MongoDB 端口
+lsof -i :19530 # Milvus 端口
+lsof -i :11434 # Ollama 端口
+```
+
+处理方式：结束占用进程，或修改 `application.yaml` 中的端口配置。
+
+### Ollama 模型下载缓慢
+
+模型文件共约 10GB，国内网络可能较慢。可仅先拉取 `qwen2.5:7b`（文档摄入和问答必需），Embedding 模型可后续补充。
+
+### Maven 依赖下载失败
+
+更换国内镜像或执行：
+```bash
+mvn spring-boot:run -Dmaven.test.skip=true
+```
+
+### MongoDB 连接失败
+
+检查容器状态：
+```bash
+docker logs synapse-mongo
+```
+
+确认 `application.yaml` 连接字符串正确：
+```yaml
+spring:
+  data:
+    mongodb:
+      uri: mongodb://admin:password@localhost:27017/synapse
+```
+
+### 后端启动卡在"种子数据初始化"
+
+若日志停在 `AuthDataInitializer` 相关输出，通常是 MongoDB 尚未就绪。等待 MongoDB 完全启动后重启后端。
+
+---
+
+- [完整功能体验](/getting-started/first-use)
+- [技术栈详情](/overview/tech-stack)
+- [系统架构](/overview/architecture-overview)

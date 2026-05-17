@@ -1,0 +1,94 @@
+---
+title: Application 层
+description: 记忆组装、摘要触发、摘要端口
+---
+
+# 聊天记忆 —— Application 层
+
+## 记忆组装
+
+文件：`synapse-kb-application/.../port/service/KnowledgeBaseApplicationService.java`
+
+```java
+private String appendMemoryContext(ChatSession session) {
+    if (!chatMemoryEnabled) {
+        return "";
+    }
+
+    StringBuilder memory = new StringBuilder();
+
+    // 1. 添加摘要
+    if (session.getSummary() != null && !session.getSummary().isBlank()) {
+        memory.append("<conversation_summary>\n")
+              .append(session.getSummary())
+              .append("\n</conversation_summary>\n\n");
+    }
+
+    // 2. 添加最近消息
+    List<ChatMessage> recentMessages = chatMessageRepository
+        .findRecentBySessionIdBeforeOrEqual(session.getId(), session.getMessageCount(), recentMessageLimit);
+
+    if (!recentMessages.isEmpty()) {
+        memory.append("<recent_dialogue>\n");
+        for (ChatMessage msg : recentMessages) {
+            memory.append(msg.role() == ChatRole.USER ? "用户: " : "助手: ")
+                  .append(msg.content())
+                  .append("\n");
+        }
+        memory.append("\n</recent_dialogue>\n");
+    }
+
+    return memory.toString();
+}
+```
+
+## 摘要触发
+
+```java
+private void summarizeIfNeeded(ChatSession session) {
+    long unsummarizedCount = session.getMessageCount() - session.getSummarizedUntilSequence();
+    if (unsummarizedCount < summaryTriggerMessageCount) {
+        return;  // 未达到触发阈值
+    }
+
+    // 获取未摘要的消息
+    List<ChatMessage> messages = chatMessageRepository
+        .findBySessionIdAndSequenceBetween(
+            session.getId(),
+            session.getSummarizedUntilSequence(),
+            session.getMessageCount()
+        );
+
+    // 生成新摘要
+    String newSummary = chatMemorySummarizerPort.summarize(
+        session.getSummary(), messages, maxSummaryChars
+    );
+
+    session.updateSummary(newSummary, session.getMessageCount());
+    chatSessionRepository.save(session);
+}
+```
+
+## ChatMemorySummarizerPort
+
+文件：`synapse-kb-application/.../port/out/ChatMemorySummarizerPort.java`
+
+```java
+public interface ChatMemorySummarizerPort {
+    String summarize(String existingSummary, List<ChatMessage> messages, int maxChars);
+}
+```
+
+**摘要 prompt 示例**：
+
+```
+请总结以下对话的关键信息，用于后续对话的上下文理解。
+现有摘要：{existingSummary}
+
+新对话：
+用户: ...
+助手: ...
+...
+
+请生成简洁的摘要（最多 {maxChars} 字符），保留关键事实和上下文。
+```

@@ -1,0 +1,88 @@
+---
+title: 项目目录速查
+description: 模块结构与文档对应关系
+---
+
+# 项目目录速查
+
+## 后端模块
+
+```
+synapse/
+├── synapse-shared/                    # 共享内核
+│   └── src/main/java/com/synapse/shared/
+│       └── exception/                 # DomainException
+│
+├── synapse-auth-domain/               # 认证领域层
+│   └── .../auth/model/                # UserAccount, RoleDefinition, UserId
+│   └── .../auth/repository/           # 仓储接口
+│
+├── synapse-auth-application/          # 认证应用层
+│   └── .../auth/port/
+│       ├── in/                        # AuthenticationUseCase, UserAdminUseCase
+│       ├── out/                       # LoginSessionPort, PasswordHasherPort
+│       └── service/                   # AuthApplicationService
+│
+├── synapse-auth-adapter/              # 认证适配器层
+│   └── .../auth/adapter/in/web/       # AuthController, UserAdminController
+│   └── .../auth/adapter/out/          # SaTokenLoginSessionAdapter, BCryptPasswordHasherAdapter
+│
+├── synapse-auth-config/               # 认证配置
+│   └── AuthBeanConfig, AuthDataInitializer, SaTokenSecurityConfig
+│
+├── synapse-kb-domain/                 # 知识库领域层
+│   └── .../kb/model/                  # KnowledgeBase, Document, ChatSession
+│   └── .../kb/repository/             # 仓储接口
+│   └── .../kb/service/                # RecursiveChunkingStrategy
+│
+├── synapse-kb-application/            # 知识库应用层
+│   └── .../kb/port/
+│       ├── in/                        # IngestDocumentUseCase, QueryKnowledgeBaseUseCase
+│       ├── out/                       # VectorStorePort, EmbeddingPort
+│       └── service/                   # KnowledgeBaseApplicationService
+│
+├── synapse-kb-adapter/                # 知识库适配器层
+│   └── .../kb/adapter/in/web/         # DocumentController, StreamingQueryController
+│   └── .../kb/adapter/out/            # MilvusVectorStoreAdapter, OllamaEmbeddingAdapter
+│
+├── synapse-kb-config/                 # 知识库配置
+│   └── KnowledgeBaseBeanConfig
+│
+└── synapse-kb-bootstrap/              # 启动入口
+    └── SynapseApplication.java
+    └── resources/application.yaml     # 所有配置
+```
+
+## 前端模块
+
+```
+synapse-frontend/
+├── src/
+│   ├── api/                           # API 客户端
+│   │   ├── client.ts                  # axios 配置
+│   │   └── query.ts                   # SSE 手动解析
+│   ├── stores/                        # Pinia Store
+│   │   └── chat.ts                    # 竞态防护、Token 缓冲
+│   ├── composables/                   # 可复用逻辑
+│   │   └── usePolling.ts              # 轮询 Hook
+│   ├── views/                         # 页面
+│   ├── components/                    # 通用组件
+│   └── router/                        # 路由配置
+```
+
+## 文档对照
+
+| 主题 | 文档位置 |
+|-----------|--------|
+| 项目介绍与技术栈 | [overview](../overview/index) |
+| 请求流转与架构 | [architecture-overview](../overview/architecture-overview) |
+| DDD 概念 | [concepts/ddd](../concepts/ddd) |
+| 分层架构设计 | [concepts/layered-architecture](../concepts/layered-architecture) |
+| 登录完整流程 | [auth/flow](../auth/flow) |
+| 文档状态机 | [ingestion/domain](../ingestion/domain) |
+| 混合检索融合 | [query/application](../query/application) |
+| SSE 事件协议 | [reference/api/streaming-query](../reference/api/streaming-query) |
+| 端口设计模式 | [design/ports](../design/ports) |
+| 递归分块算法 | [design/chunking](../design/chunking) |
+| 前端竞态防护 | [design/frontend](../design/frontend) |
+| 配置项参考 | [reference/configuration](../reference/configuration) |

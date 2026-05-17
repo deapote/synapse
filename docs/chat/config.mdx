@@ -1,0 +1,17 @@
+---
+title: Config 层
+description: 聊天记忆配置参数
+---
+
+# 聊天记忆 —— Config 层
+
+## 聊天记忆配置
+
+```yaml
+synapse:
+  chat-memory:
+    enabled: true                      # 启用聊天记忆
+    recent-message-limit: 8            # 保留最近消息数
+    summary-trigger-message-count: 12  # 触发摘要的消息阈值
+    max-summary-chars: 1500            # 摘要最大字符数
+```

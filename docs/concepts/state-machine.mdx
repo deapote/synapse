@@ -1,0 +1,124 @@
+---
+title: 状态机
+description: 为什么文档需要状态机，状态机 vs 随意改字段
+---
+
+# 状态机
+
+## 文档状态机的必要性
+
+在 Synapse 中，文档从上传到可检索，经历多个阶段：
+
+```
+PENDING → PROCESSING → COMPLETED
+              ↓
+           FAILED → PENDING（重试）
+```
+
+- **PENDING**：刚上传，等待后台处理
+- **PROCESSING**：正在解析、分块、向量化
+- **COMPLETED**：处理完成，可以问答
+- **FAILED**：处理失败，可以重试
+
+单一布尔字段的局限
+
+因为中间状态很重要：
+- 用户需要知道文档正在处理中（不是卡死了）
+- Worker 需要知道哪些文档待处理（PENDING）
+- 系统需要知道哪些文档失败了（FAILED），可以重试
+- 已经 COMPLETED 的文档不应该再次被处理
+
+## 状态机 vs 随意改字段
+
+**不好的方式：随处改字段**
+
+```java
+// 这种方式的问题：任何地方都可以随意改状态
+document.setStatus("COMPLETED");  // 拼写错误也不会被发现
+document.setStatus("PROCESSING"); // 可以从 COMPLETED 回到 PROCESSING，这合理吗？
+```
+
+问题：
+- 无效的状态转换不会被阻止（比如 COMPLETED → PENDING）
+- 状态转换的副作用（记录开始时间、结束时间）需要每个调用方自己处理
+- 容易拼写错误（"COMPLETED" vs "Completed"）
+
+**好的方式：状态机**
+
+```java
+public class Document {
+    // 状态转换规则表：当前状态 → 允许的下个状态集合
+    private static final Map<DocumentStatus, Set<DocumentStatus>> VALID_TRANSITIONS = Map.of(
+        DocumentStatus.PENDING,     EnumSet.of(DocumentStatus.PROCESSING),
+        DocumentStatus.PROCESSING,  EnumSet.of(DocumentStatus.COMPLETED, DocumentStatus.FAILED),
+        DocumentStatus.FAILED,      EnumSet.of(DocumentStatus.PENDING),
+        DocumentStatus.COMPLETED,   EnumSet.noneOf(DocumentStatus.class)
+    );
+
+    public void transitionTo(DocumentStatus newStatus) {
+        Set<DocumentStatus> validNext = VALID_TRANSITIONS.get(this.status);
+        if (validNext == null || !validNext.contains(newStatus)) {
+            throw new DomainException("无效的状态转换 " + this.status + "->" + newStatus);
+        }
+        this.status = newStatus;
+        // 副作用：自动记录处理时间
+        if (newStatus == PROCESSING) {
+            this.processingStartAt = Instant.now();
+        }
+        if (newStatus == COMPLETED || newStatus == FAILED) {
+            this.processingCompleteAt = Instant.now();
+        }
+    }
+}
+```
+
+好处：
+- **非法转换被阻止**：COMPLETED → PROCESSING 会直接抛异常
+- **副作用集中管理**：转换时自动记录开始/结束时间，不需要调用方操心
+- **规则一目了然**：看 VALID_TRANSITIONS 就知道所有合法转换
+
+## 状态转换规则
+
+| 当前状态 | 允许转换到 | 说明 |
+|---------|-----------|------|
+| PENDING | PROCESSING | 开始处理 |
+| PROCESSING | COMPLETED | 处理成功 |
+| PROCESSING | FAILED | 处理失败 |
+| FAILED | PENDING | 重试 |
+| COMPLETED | （无） | 终态，不能再转 |
+
+## 重试机制
+
+当文档处理失败时：
+
+```java
+public void retry() {
+    transitionTo(DocumentStatus.PENDING);
+    this.processingStartAt = null;
+    this.processingCompleteAt = null;
+    this.failureReason = null;
+    this.chunkCount = 0;
+}
+```
+
+重试时会：
+- 状态回到 PENDING
+- 清空处理时间记录
+- 清空失败原因
+- 清空分块计数
+
+这样重试就是一个"全新"的处理过程，不会受到之前失败的影响。
+
+## 状态机的其他应用
+
+状态机不仅用于文档，还用于摄入任务：
+
+```
+QUEUED → RUNNING → SUCCEEDED
+              ↓
+           RETRYING → QUEUED
+              ↓
+           FAILED
+```
+
+摄入任务还有额外的概念：**租约（Lease）**。Worker 认领任务时设置租约，如果 Worker 崩溃，租约过期后其他 Worker 可以重新认领。

@@ -1,0 +1,210 @@
+---
+title: 递归分块算法详解
+description: RecursiveChunkingStrategy 的四种边界检测、重叠窗口计算
+---
+
+# 递归分块算法详解
+
+文本分块是 RAG 系统的关键环节：切得太碎丢失上下文，切得太长超出 Embedding 模型限制。Synapse 的 `RecursiveChunkingStrategy` 采用**规则优先的语义边界**策略，本节完整解析其算法。
+
+## 设计目标
+
+1. **优先在语义边界切分**——段落边界优于句子边界，句子边界优于任意字符
+2. **控制块大小**——不超过模型 token 限制（默认约 1000 字符）
+3. **保持上下文连续性**——相邻块有重叠窗口，避免边界信息丢失
+4. **支持中英文**——标点符号兼容中文全角字符
+
+## 四种边界优先级
+
+`findBreakPoint()` 按以下优先级寻找切分点：
+
+```
+1. Markdown 结构边界（标题、列表、代码块、表格）
+      ↓ 没找到或太靠前
+2. 段落边界（\n\n 空行）
+      ↓ 没找到或太靠前
+3. 句子边界（.!?。！？ + 空格）
+      ↓ 没找到或太靠前
+4. 软边界（空格、逗号、分号、冒号及其中文版本）
+      ↓ 没找到
+5. 硬切分（直接截断到 maxSegmentSize）
+```
+
+### 下限保护 —— lowerBound
+
+```java
+int lowerBound = start + maxSegmentSize / 2;  // 至少走到一半才允许切分
+```
+
+防止边界太靠前导致块太小。例如 `maxSegmentSize=1000`，`lowerBound=500`，切分点必须在 500~1000 之间。
+
+## 代码逐行解析
+
+### 构造函数 —— 参数校验
+
+```java
+public RecursiveChunkingStrategy(int maxSegmentSize, double overlapRatio,
+                                   int minOverlapSize, int maxOverlapSize) {
+    if (maxSegmentSize <= 0) {
+        throw new DomainException("最大分块字符大小必须为正数");
+    }
+    if (overlapRatio < MIN_OVERLAP_RATIO || overlapRatio > MAX_OVERLAP_RATIO) {
+        throw new DomainException("分块重叠比例必须在 0.10 到 0.20 之间");
+    }
+    // overlapSize = 限制在 [minOverlapSize, maxOverlapSize] 内的 rounding(maxSegmentSize * overlapRatio)
+    this.overlapSize = Math.max(minOverlapSize,
+        Math.min((int) Math.round(maxSegmentSize * overlapRatio), maxOverlapSize));
+}
+```
+
+**安全设计**：
+- 重叠比例必须在 **10%~20%** 之间（`MIN_OVERLAP_RATIO=0.10`，`MAX_OVERLAP_RATIO=0.20`）
+- 重叠字符数有上下界，防止极端配置
+
+### 主循环 —— split()
+
+```java
+public List<DocumentChunk> split(String text) {
+    List<DocumentChunk> chunks = new ArrayList<>();
+    int index = 0;      // 块序号
+    int position = 0;   // 当前处理位置
+
+    while (position < text.length()) {
+        int end = Math.min(position + maxSegmentSize, text.length());
+        int breakPoint = findBreakPoint(text, position, end);
+
+        String chunkText = text.substring(position, breakPoint).strip();
+        if (chunkText.isEmpty()) {
+            position = breakPoint;
+            continue;  // 跳过空块
+        }
+        chunks.add(new DocumentChunk(index, chunkText, position, breakPoint));
+
+        index++;
+        int nextPosition = findOverlapStart(text, position, breakPoint);
+        if (nextPosition <= position) {
+            nextPosition = breakPoint;  // 防死循环
+        }
+        position = nextPosition;
+    }
+    return chunks;
+}
+```
+
+### 重叠窗口 —— findOverlapStart()
+
+```java
+private int findOverlapStart(String text, int start, int breakPoint) {
+    int overlapStart = Math.max(start, breakPoint - overlapSize);
+
+    // 优先在重叠区域内找句子边界
+    int sentenceBreak = findSentenceBreak(text, overlapStart, breakPoint);
+    if (sentenceBreak > overlapStart && sentenceBreak < breakPoint) {
+        return sentenceBreak;
+    }
+
+    // 其次找段落边界
+    int paragraphBreak = findParagraphBreak(text, overlapStart, breakPoint);
+    if (paragraphBreak > overlapStart && paragraphBreak < breakPoint) {
+        return paragraphBreak;
+    }
+
+    return overlapStart;  // 没有语义边界，直接按字符数重叠
+}
+```
+
+**关键设计**：重叠不是简单的"后退 N 个字符"，而是**优先在重叠区域内找语义边界**。这样相邻块的重叠部分更自然，不会在单词中间断开。
+
+## 四种边界检测实现
+
+### 1. Markdown 边界
+
+```java
+private static final Pattern MARKDOWN_BOUNDARY = Pattern.compile(
+    "^\\s*(#{1,6}\\s+|[-*+]\\s+|\\d+[.)]\\s+|>\\s+|```|\\|.+\\|)\\S.*",
+    Pattern.MULTILINE
+);
+```
+
+匹配：标题 `#`、列表 `- * +`、引用 `>`、代码块 ```、表格 `|`。
+
+### 2. 段落边界
+
+```java
+private int findParagraphBreak(String text, int start, int end) {
+    int best = -1;
+    int i = start;
+    while (i < end) {
+        int next = text.indexOf("\n\n", i);
+        if (next < 0 || next >= end) break;
+        best = next + 2;  // 返回空行之后的位置
+        i = next + 2;
+    }
+    return best;
+}
+```
+
+### 3. 句子边界
+
+```java
+private int findSentenceBreak(String text, int start, int end) {
+    for (int i = end - 1; i > start; i--) {  // 从后往前找
+        char c = text.charAt(i);
+        if (isSentenceTerminator(c)) {
+            if (i + 1 >= text.length() || Character.isWhitespace(text.charAt(i + 1))) {
+                return i + 1;
+            }
+        }
+    }
+    return -1;
+}
+
+private boolean isSentenceTerminator(char c) {
+    return c == '.' || c == '!' || c == '?' || c == '。' || c == '！' || c == '？';
+}
+```
+
+**从后往前找**：尽量让切分点靠近 `end`（块更大），同时保证是完整句子。
+
+### 4. 软边界
+
+```java
+private int findSoftBreak(String text, int start, int end) {
+    for (int i = end - 1; i > start; i--) {
+        char c = text.charAt(i);
+        if (Character.isWhitespace(c) || c == ',' || c == ';' || c == ':'
+                || c == '，' || c == '；' || c == '：') {
+            return i + 1;
+        }
+    }
+    return -1;
+}
+```
+
+中英文标点都支持：`，；：` 和 `, ; :`。
+
+## 重叠比例 10%~20% 的设定依据
+
+重叠的目的是：**避免关键信息恰好落在边界处被切断**。
+
+- **0% 重叠**：边界处的上下文完全丢失
+- **10% 重叠**：安全缓冲，相邻块共享部分上下文
+- **20% 重叠**：更保险，但冗余增加、存储成本上升
+- **>20% 重叠**：收益递减，不值得（所以代码里做了上限限制）
+
+## 防御性设计
+
+```java
+private static final int MAX_TEXT_LENGTH = 10_000_000;  // 1000万字符上限
+
+public List<DocumentChunk> split(String text) {
+    if (text.length() > MAX_TEXT_LENGTH) {
+        throw new DomainException(
+            "文本过长，无法分块：当前 " + text.length() + " 字符，最大允许 " + MAX_TEXT_LENGTH + " 字符。" +
+            "请拆分文档后重新上传。"
+        );
+    }
+}
+```
+
+防止异常大的文档（如解析错误的二进制文件被当成文本）拖垮摄入任务。

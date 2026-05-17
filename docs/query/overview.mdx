@@ -1,0 +1,37 @@
+---
+title: 功能概述
+description: 问答检索要解决什么问题，涉及哪些角色
+---
+
+# 问答检索 —— 功能概述
+
+## 场景
+
+用户在聊天框输入问题："这个产品的主要功能是什么？" 系统需要从知识库中找到相关文档片段，基于这些片段生成答案，并以打字机效果逐字显示。
+
+## 问答检索的复杂度
+
+问答检索是 RAG 系统的**核心链路**，涉及多个技术点：
+
+- **SSE 流式**：后端生成一个字，前端立刻显示一个字
+- **Query 改写 + 质量门禁**：优化问题，但不过度改写
+- **混合检索并行**：向量检索和关键词检索同时执行
+- **融合重排**：两种结果加权排序
+- **Prompt 工程**：隔离用户问题和检索内容，防止 prompt 注入
+- **引用校验**：确保 LLM 引用的来源真实存在
+
+## 主要代码文件
+
+| 层级 | 文件路径 |
+|------|---------|
+| Domain | `synapse-kb-domain/.../model/Query.java` |
+| Domain | `synapse-kb-domain/.../model/RagContext.java` |
+| Domain | `synapse-kb-domain/.../model/ChunkReference.java` |
+| Application | `synapse-kb-application/.../port/in/QueryKnowledgeBaseUseCase.java` |
+| Application | `synapse-kb-application/.../port/service/KnowledgeBaseApplicationService.java` |
+| Adapter-In | `synapse-kb-adapter/.../in/web/StreamingQueryController.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/llm/OllamaQueryRewriteAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/llm/OllamaStreamingLlmAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/vector/MilvusVectorStoreAdapter.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/persistence/MongoChunkSearchIndexAdapter.java` |
+| Config | `synapse-kb-config/.../KnowledgeBaseBeanConfig.java` |

@@ -1,0 +1,88 @@
+---
+title: 生产环境注意事项
+description: 配置覆盖、安全加固、性能调优建议
+---
+
+# 部署 —— 生产环境注意事项
+
+## 配置覆盖
+
+生产环境通过外部配置文件或环境变量覆盖默认值：
+
+```bash
+# 方式一：外部配置文件
+java -jar synapse.jar --spring.config.location=./application-prod.yaml
+
+# 方式二：环境变量
+export SPRING_DATA_MONGODB_URI=mongodb://prod-host:27017/synapse
+export SYNAPSE_LLM_BASE_URL=http://ollama-internal:11434
+```
+
+## 安全加固
+
+### 1. 修改默认密码
+
+首次部署后必须修改 `admin` 密码，或删除默认账号改用 LDAP/OAuth。
+
+### 2. CORS 配置
+
+```yaml
+synapse:
+  cors:
+    allowed-origins:
+      - https://your-domain.com   # 生产前端域名
+```
+
+禁止用 `*` 允许所有来源。
+
+### 3. Token 安全
+
+```yaml
+sa-token:
+  token-name: satoken
+  timeout: 2592000     # 30 天，生产建议缩短
+  activity-timeout: -1 # 永不冻结，生产建议设置
+```
+
+### 4. 文件上传限制
+
+根据实际业务调整：
+
+```yaml
+synapse:
+  ingestion:
+    max-file-size: 104857600   # 100MB，按需调整
+    allowed-extensions: pdf,docx,txt,md
+```
+
+### 5. 日志脱敏
+
+生产日志不要打印：
+- 用户密码（即使是哈希）
+- Token 值
+- 完整文件内容
+- 内部堆栈（对外返回时）
+
+## 性能调优建议
+
+### Ollama
+
+- 使用 GPU 运行（CUDA / Metal）
+- 调整 `num_ctx` 上下文长度
+- 并发请求多时考虑多实例负载均衡
+
+### MongoDB
+
+- 为常用查询字段加索引：`knowledgeBaseId`、`ownerUserId`、`status`
+- 定期清理已完成/失败的 `ingestion_job` 记录
+
+### Milvus
+
+- 监控 Collection 的段（segment）数量，定期压缩
+- 数据量大时考虑分片（shard）
+
+### JVM
+
+```bash
+java -Xms2g -Xmx4g -XX:+UseG1GC -jar synapse.jar
+```
