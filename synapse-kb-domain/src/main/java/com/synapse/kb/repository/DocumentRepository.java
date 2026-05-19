@@ -2,6 +2,7 @@ package com.synapse.kb.repository;
 
 import com.synapse.kb.model.Document;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentLifecycleStatus;
 import com.synapse.kb.model.KnowledgeBaseId;
 
 import java.util.List;
@@ -24,4 +25,8 @@ public interface DocumentRepository {
 
     /** 返回所有同哈希记录，用于区分重复上传和失败重试。 */
     List<Document> findByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash);
+
+    /** 按知识库 + canonicalKey + 时效状态查找文档，用于版本替代和检索去重。 */
+    List<Document> findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(
+            KnowledgeBaseId knowledgeBaseId, String canonicalKey, DocumentLifecycleStatus status);
 }

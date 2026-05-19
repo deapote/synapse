@@ -116,6 +116,8 @@ milvus:
   metric-type: COSINE
   connect-timeout-ms: 5000
   rpc-deadline-ms: 30000
+  v3:
+    collection-name: synapse_document_chunks_v3
   v2:
     enabled: true
     dual-write: true

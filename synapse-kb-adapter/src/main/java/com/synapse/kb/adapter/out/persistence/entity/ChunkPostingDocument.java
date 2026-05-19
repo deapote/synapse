@@ -8,7 +8,9 @@ import org.springframework.data.mongodb.core.mapping.Document;
 @Document(collection = "document_chunk_postings")
 @CompoundIndexes({
         @CompoundIndex(name = "idx_posting_kb_token", def = "{'knowledgeBaseId': 1, 'token': 1}"),
-        @CompoundIndex(name = "idx_posting_kb_doc", def = "{'knowledgeBaseId': 1, 'documentId': 1}")
+        @CompoundIndex(name = "idx_posting_kb_doc", def = "{'knowledgeBaseId': 1, 'documentId': 1}"),
+        @CompoundIndex(name = "idx_posting_kb_token_lifecycle_date",
+                def = "{'knowledgeBaseId': 1, 'token': 1, 'lifecycleStatus': 1, 'effectiveFromEpochDay': 1, 'effectiveToEpochDay': 1}")
 })
 public class ChunkPostingDocument {
     @Id
@@ -23,6 +25,14 @@ public class ChunkPostingDocument {
     private int endPosition;
     private int tf;
     private int tokenCount;
+    private long effectiveFromEpochDay;
+    private long effectiveToEpochDay;
+    private String lifecycleStatus;
+    private String canonicalKey;
+    private String versionLabel;
+    private int authorityLevel;
+    private String jurisdiction;
+    private String sourceType;
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
@@ -46,4 +56,20 @@ public class ChunkPostingDocument {
     public void setTf(int tf) { this.tf = tf; }
     public int getTokenCount() { return tokenCount; }
     public void setTokenCount(int tokenCount) { this.tokenCount = tokenCount; }
+    public long getEffectiveFromEpochDay() { return effectiveFromEpochDay; }
+    public void setEffectiveFromEpochDay(long effectiveFromEpochDay) { this.effectiveFromEpochDay = effectiveFromEpochDay; }
+    public long getEffectiveToEpochDay() { return effectiveToEpochDay; }
+    public void setEffectiveToEpochDay(long effectiveToEpochDay) { this.effectiveToEpochDay = effectiveToEpochDay; }
+    public String getLifecycleStatus() { return lifecycleStatus; }
+    public void setLifecycleStatus(String lifecycleStatus) { this.lifecycleStatus = lifecycleStatus; }
+    public String getCanonicalKey() { return canonicalKey; }
+    public void setCanonicalKey(String canonicalKey) { this.canonicalKey = canonicalKey; }
+    public String getVersionLabel() { return versionLabel; }
+    public void setVersionLabel(String versionLabel) { this.versionLabel = versionLabel; }
+    public int getAuthorityLevel() { return authorityLevel; }
+    public void setAuthorityLevel(int authorityLevel) { this.authorityLevel = authorityLevel; }
+    public String getJurisdiction() { return jurisdiction; }
+    public void setJurisdiction(String jurisdiction) { this.jurisdiction = jurisdiction; }
+    public String getSourceType() { return sourceType; }
+    public void setSourceType(String sourceType) { this.sourceType = sourceType; }
 }

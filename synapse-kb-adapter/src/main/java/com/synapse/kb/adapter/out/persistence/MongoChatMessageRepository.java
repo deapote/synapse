@@ -107,10 +107,23 @@ public class MongoChatMessageRepository implements ChatMessageRepository {
         doc.setScore(reference.score());
         doc.setStartPosition(reference.startPosition());
         doc.setEndPosition(reference.endPosition());
+        doc.setCanonicalKey(reference.canonicalKey());
+        doc.setVersionLabel(reference.versionLabel());
+        doc.setEffectiveFrom(reference.effectiveFrom());
+        doc.setEffectiveTo(reference.effectiveTo());
+        doc.setLifecycleStatus(reference.lifecycleStatus() != null ? reference.lifecycleStatus().name() : null);
+        doc.setAuthorityLevel(reference.authorityLevel());
+        doc.setJurisdiction(reference.jurisdiction());
         return doc;
     }
 
     private ChunkReference toReference(ChatReferenceDocument doc) {
+        String lifecycleStatusStr = doc.getLifecycleStatus();
+        com.synapse.kb.model.DocumentLifecycleStatus lifecycleStatus =
+                lifecycleStatusStr != null && !lifecycleStatusStr.isBlank()
+                        ? com.synapse.kb.model.DocumentLifecycleStatus.valueOf(lifecycleStatusStr)
+                        : com.synapse.kb.model.DocumentLifecycleStatus.ACTIVE;
+
         return new ChunkReference(
                 doc.getDocumentId(),
                 doc.getDocumentName(),
@@ -118,7 +131,14 @@ public class MongoChatMessageRepository implements ChatMessageRepository {
                 doc.getChunkText(),
                 doc.getScore(),
                 doc.getStartPosition(),
-                doc.getEndPosition()
+                doc.getEndPosition(),
+                doc.getCanonicalKey(),
+                doc.getVersionLabel(),
+                doc.getEffectiveFrom(),
+                doc.getEffectiveTo(),
+                lifecycleStatus,
+                doc.getAuthorityLevel(),
+                doc.getJurisdiction()
         );
     }
 }

@@ -97,7 +97,14 @@ public class ChatController {
                 ref.score(),
                 ref.startPosition(),
                 ref.endPosition(),
-                used
+                used,
+                ref.canonicalKey(),
+                ref.versionLabel(),
+                ref.effectiveFrom(),
+                ref.effectiveTo(),
+                ref.lifecycleStatus() != null ? ref.lifecycleStatus().name() : null,
+                ref.authorityLevel(),
+                ref.jurisdiction()
         );
     }
 }

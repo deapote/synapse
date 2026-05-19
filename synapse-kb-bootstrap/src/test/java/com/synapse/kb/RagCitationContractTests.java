@@ -2,6 +2,7 @@ package com.synapse.kb;
 
 import com.synapse.kb.model.*;
 import com.synapse.kb.port.out.*;
+import com.synapse.kb.port.out.RetrievalFilter;
 import com.synapse.kb.port.service.KnowledgeBaseApplicationService;
 import com.synapse.kb.repository.ChatMessageRepository;
 import com.synapse.kb.repository.ChatSessionRepository;
@@ -56,14 +57,16 @@ class RagCitationContractTests {
                 new NoopIngestionJobRepository(),
                 new NoopEmbeddingPort(),
                 new VectorStorePort() {
-                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, List<float[]> embeddings) {}
-                    @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK) { return vectorResults; }
+                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, List<float[]> embeddings, DocumentMetadata metadata) {}
+                    @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK, RetrievalFilter filter) { return vectorResults; }
                     @Override public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) {}
+                    @Override public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {}
                 },
                 new ChunkSearchIndexPort() {
-                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks) {}
-                    @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK) { return List.of(); }
+                    @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, DocumentMetadata metadata) {}
+                    @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK, RetrievalFilter filter) { return List.of(); }
                     @Override public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) {}
+                    @Override public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {}
                 },
                 query -> query,
                 (existingSummary, messages, maxChars) -> existingSummary,
@@ -93,6 +96,7 @@ class RagCitationContractTests {
         @Override public void deleteById(DocumentId id) {}
         @Override public boolean existsByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) { return false; }
         @Override public List<Document> findByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) { return List.of(); }
+        @Override public List<Document> findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(KnowledgeBaseId knowledgeBaseId, String canonicalKey, DocumentLifecycleStatus status) { return List.of(); }
     }
 
     private static class EmptyChatSessionRepository implements ChatSessionRepository {

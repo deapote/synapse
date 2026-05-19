@@ -1,6 +1,7 @@
 package com.synapse.kb.port.in;
 
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentMetadata;
 import com.synapse.kb.model.KnowledgeBaseId;
 
 import java.io.InputStream;
@@ -18,7 +19,18 @@ public interface IngestDocumentUseCase {
             String contentType,
             long fileSize,
             String contentHash,
-            InputStream content
+            InputStream content,
+            DocumentMetadata metadata
     ) {
+        public IngestDocumentCommand {
+            if (metadata == null) {
+                metadata = new DocumentMetadata();
+            }
+        }
+
+        public IngestDocumentCommand(KnowledgeBaseId knowledgeBaseId, String fileName, String contentType,
+                                     long fileSize, String contentHash, InputStream content) {
+            this(knowledgeBaseId, fileName, contentType, fileSize, contentHash, content, new DocumentMetadata());
+        }
     }
 }

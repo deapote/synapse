@@ -15,11 +15,13 @@ import org.slf4j.LoggerFactory;
 import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
@@ -39,7 +41,9 @@ public class KnowledgeBaseApplicationService implements
         QueryKnowledgeBaseUseCase,
         GetCurrentChatSessionUseCase,
         CreateChatSessionUseCase,
-        ListChatMessagesUseCase {
+        ListChatMessagesUseCase,
+        UpdateDocumentMetadataUseCase,
+        SupersedeDocumentUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseApplicationService.class);
     private static final int MAX_FAILURE_REASON_LENGTH = 500;
@@ -79,8 +83,8 @@ public class KnowledgeBaseApplicationService implements
     public KnowledgeBaseApplicationService(
             KnowledgeBaseRepository knowledgeBaseRepository,
             DocumentRepository documentRepository,
-            ChatSessionRepository chatSessionRepository,
-            ChatMessageRepository chatMessageRepository,
+            com.synapse.kb.repository.ChatSessionRepository chatSessionRepository,
+            com.synapse.kb.repository.ChatMessageRepository chatMessageRepository,
             DocumentParserPort documentParserPort,
             RecursiveChunkingStrategy recursiveChunkingStrategy,
             DocumentContentStorePort documentContentStorePort,
@@ -230,12 +234,26 @@ public class KnowledgeBaseApplicationService implements
             }
         }
 
+        DocumentMetadata metadata = command.metadata();
+        if (metadata.supersedesDocumentId() != null && !metadata.supersedesDocumentId().isBlank()) {
+            DocumentId oldId = new DocumentId(metadata.supersedesDocumentId());
+            Document oldDoc = documentRepository.findById(oldId)
+                    .orElseThrow(() -> new DomainException("被替代文档不存在: " + metadata.supersedesDocumentId()));
+            if (!oldDoc.getKnowledgeBaseId().equals(command.knowledgeBaseId())) {
+                throw new DomainException("被替代文档必须属于同一知识库");
+            }
+            if (oldDoc.getLifecycleStatus() != DocumentLifecycleStatus.ACTIVE) {
+                throw new DomainException("被替代文档必须是 ACTIVE 状态");
+            }
+        }
+
         Document document = Document.create(
                 command.knowledgeBaseId(),
                 command.fileName(),
                 command.contentType(),
                 command.fileSize(),
-                command.contentHash()
+                command.contentHash(),
+                metadata
         );
 
         String contentObjectId = documentContentStorePort.store(
@@ -359,12 +377,44 @@ public class KnowledgeBaseApplicationService implements
             document.setChunkCount(chunks.size());
             document.transitionTo(DocumentStatus.COMPLETED);
 
+            // 新文档摄入成功后，再执行版本替代
+            if (document.getSupersedesDocumentId() != null && !document.getSupersedesDocumentId().isBlank()) {
+                supersedeOldDocument(document);
+            }
+
         } catch (Exception e) {
             cleanupDocumentIndexesQuietly(document);
             throw new DomainException("文档处理失败: " + safeFailureReason(e), e);
         } finally {
             documentRepository.save(document);
         }
+    }
+
+    private void supersedeOldDocument(Document newDocument) {
+        DocumentId oldId = new DocumentId(newDocument.getSupersedesDocumentId());
+        Document oldDoc = documentRepository.findById(oldId).orElse(null);
+        if (oldDoc == null) {
+            log.warn("被替代文档不存在，跳过替代 documentId={}", oldId.value());
+            return;
+        }
+
+        oldDoc.supersedeBy(newDocument, newDocument.getEffectiveFrom());
+        documentRepository.save(oldDoc);
+        log.info("文档替代完成（索引将在检索时通过文档真实状态过滤）oldDocumentId={} newDocumentId={} effectiveTo={}",
+                oldDoc.getId().value(), newDocument.getId().value(), newDocument.getEffectiveFrom());
+    }
+
+    private DocumentMetadata toMetadata(Document document) {
+        return new DocumentMetadata(
+                document.getSourceType(),
+                document.getCanonicalKey(),
+                document.getVersionLabel(),
+                document.getEffectiveFrom(),
+                document.getEffectiveTo(),
+                document.getSupersedesDocumentId(),
+                document.getAuthorityLevel(),
+                document.getJurisdiction()
+        );
     }
 
     private List<DocumentChunk> parseDocumentChunks(Document document, String contentObjectId) {
@@ -386,12 +436,14 @@ public class KnowledgeBaseApplicationService implements
         );
         log.info("文档向量化完成 documentId={} embeddings={}", document.getId().value(), embeddings.size());
 
+        DocumentMetadata metadata = toMetadata(document);
         vectorStorePort.store(
                 document.getKnowledgeBaseId(),
                 document.getId(),
                 document.getFileName(),
                 chunks,
-                embeddings
+                embeddings,
+                metadata
         );
         log.info("文档向量写入完成 documentId={}", document.getId().value());
 
@@ -399,7 +451,8 @@ public class KnowledgeBaseApplicationService implements
                 document.getKnowledgeBaseId(),
                 document.getId(),
                 document.getFileName(),
-                chunks
+                chunks,
+                metadata
         );
         log.info("文档关键词索引写入完成 documentId={}", document.getId().value());
     }
@@ -440,11 +493,12 @@ public class KnowledgeBaseApplicationService implements
             summarizeIfNeeded(chatSession);
         }
         PreparedQuery preparedQuery = prepareQuery(query.text());
+        LocalDate asOfDate = resolveAsOfDate(query);
 
-        List<ChunkReference> results = retrieveReferences(query, preparedQuery);
+        List<ChunkReference> results = retrieveReferences(query, preparedQuery, asOfDate);
         StringBuilder contextBuilder = new StringBuilder();
         appendMemoryContext(contextBuilder, chatSession);
-        appendSourceContexts(contextBuilder, results);
+        appendSourceContexts(contextBuilder, results, asOfDate);
 
         String prompt = String.format(promptTemplate,
                 contextBuilder.toString(),
@@ -459,26 +513,106 @@ public class KnowledgeBaseApplicationService implements
         );
     }
 
-    private List<ChunkReference> retrieveReferences(Query query, PreparedQuery preparedQuery) {
+    private LocalDate resolveAsOfDate(Query query) {
+        if (query.asOfDate() != null) {
+            return query.asOfDate();
+        }
+        LocalDate parsed = parseTemporalIntent(query.text());
+        return parsed != null ? parsed : LocalDate.now();
+    }
+
+    private LocalDate parseTemporalIntent(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        String normalized = text.replaceAll("\s+", "");
+        java.util.regex.Matcher m;
+
+        m = java.util.regex.Pattern.compile("(\\d{4})年(?:规定|规则|法规|政策|制度|办法|意见|通知|新规|旧规|适用|有效|生效)").matcher(normalized);
+        if (m.find()) {
+            int year = Integer.parseInt(m.group(1));
+            return LocalDate.of(year, 12, 31);
+        }
+
+        m = java.util.regex.Pattern.compile("(\\d{2})年(?:新规|新规程|新规定|新办法|新政策|新制度)").matcher(normalized);
+        if (m.find()) {
+            int year = Integer.parseInt(m.group(1));
+            int fullYear = year >= 50 ? 1900 + year : 2000 + year;
+            return LocalDate.of(fullYear, 12, 31);
+        }
+
+        m = java.util.regex.Pattern.compile("现在适用|当前适用|现在规定|目前有效|现行").matcher(normalized);
+        if (m.find()) {
+            return LocalDate.now();
+        }
+
+        return null;
+    }
+
+    private List<ChunkReference> retrieveReferences(Query query, PreparedQuery preparedQuery, LocalDate asOfDate) {
+        RetrievalFilter filter = new RetrievalFilter(asOfDate, null, null);
         CompletableFuture<List<ChunkReference>> vectorFuture = CompletableFuture.supplyAsync(
-                () -> vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK),
+                () -> vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK, filter),
                 retrievalExecutor
         );
         CompletableFuture<List<ChunkReference>> keywordFuture = CompletableFuture.supplyAsync(
-                () -> chunkSearchIndexPort.search(query.knowledgeBaseId(), preparedQuery.effectiveText(), keywordCandidateK),
+                () -> chunkSearchIndexPort.search(query.knowledgeBaseId(), preparedQuery.effectiveText(), keywordCandidateK, filter),
                 retrievalExecutor
         );
-        return mergeAndRerank(await(vectorFuture), await(keywordFuture));
+        List<ChunkReference> merged = mergeAndRerank(await(vectorFuture), await(keywordFuture));
+        List<ChunkReference> filtered = filterByDocumentEffectiveDate(merged, asOfDate);
+        return deduplicateByCanonicalKey(filtered);
     }
 
-    private void appendSourceContexts(StringBuilder contextBuilder, List<ChunkReference> results) {
+    private List<ChunkReference> filterByDocumentEffectiveDate(List<ChunkReference> references, LocalDate asOfDate) {
+        if (references.isEmpty()) {
+            return references;
+        }
+        java.util.Set<String> documentIds = references.stream()
+                .map(ChunkReference::documentId)
+                .collect(java.util.stream.Collectors.toSet());
+        java.util.Map<String, Document> documentMap = new java.util.HashMap<>();
+        for (String docId : documentIds) {
+            documentRepository.findById(new DocumentId(docId))
+                    .ifPresent(doc -> documentMap.put(docId, doc));
+        }
+        return references.stream()
+                .filter(ref -> {
+                    Document doc = documentMap.get(ref.documentId());
+                    if (doc == null) {
+                        return true;
+                    }
+                    return doc.isEffectiveOn(asOfDate);
+                })
+                .toList();
+    }
+
+    private void appendSourceContexts(StringBuilder contextBuilder, List<ChunkReference> results, LocalDate asOfDate) {
         for (int i = 0; i < results.size(); i++) {
             ChunkReference result = results.get(i);
             contextBuilder.append("<source id=\"").append(i + 1).append("\">\n")
                     .append("<documentName>").append(escapeSourceMetadata(result.documentName())).append("</documentName>\n")
                     .append("<chunkIndex>").append(result.chunkIndex()).append("</chunkIndex>\n")
-                    .append("<score>").append(String.format(java.util.Locale.ROOT, "%.4f", result.score())).append("</score>\n")
-                    .append("<chunkText>\n")
+                    .append("<score>").append(String.format(java.util.Locale.ROOT, "%.4f", result.score())).append("</score>\n");
+            if (result.canonicalKey() != null && !result.canonicalKey().isBlank()) {
+                contextBuilder.append("<canonicalKey>").append(escapeSourceMetadata(result.canonicalKey())).append("</canonicalKey>\n");
+            }
+            if (result.versionLabel() != null && !result.versionLabel().isBlank()) {
+                contextBuilder.append("<versionLabel>").append(escapeSourceMetadata(result.versionLabel())).append("</versionLabel>\n");
+            }
+            if (result.effectiveFrom() != null) {
+                contextBuilder.append("<effectiveFrom>").append(result.effectiveFrom()).append("</effectiveFrom>\n");
+            }
+            if (result.effectiveTo() != null) {
+                contextBuilder.append("<effectiveTo>").append(result.effectiveTo()).append("</effectiveTo>\n");
+            }
+            if (result.lifecycleStatus() != null) {
+                contextBuilder.append("<lifecycleStatus>").append(result.lifecycleStatus()).append("</lifecycleStatus>\n");
+            }
+            if (result.authorityLevel() > 0) {
+                contextBuilder.append("<authorityLevel>").append(result.authorityLevel()).append("</authorityLevel>\n");
+            }
+            contextBuilder.append("<chunkText>\n")
                     .append(result.chunkText())
                     .append("\n</chunkText>\n")
                     .append("</source>\n\n");
@@ -520,6 +654,16 @@ public class KnowledgeBaseApplicationService implements
         int safePage = Math.max(0, page);
         int safeSize = Math.max(1, Math.min(size, 100));
         return chatMessageRepository.findBySessionId(sessionId, safePage, safeSize);
+    }
+
+    @Override
+    public Document updateMetadata(DocumentId id, DocumentMetadata metadata) {
+        throw new DomainException("v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更");
+    }
+
+    @Override
+    public void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo) {
+        throw new DomainException("v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更");
     }
 
     private ChatSession resolveChatSession(Query query, KnowledgeBase kb) {
@@ -660,8 +804,38 @@ public class KnowledgeBaseApplicationService implements
         return merged.values().stream()
                 .map(this::toFinalReference)
                 .sorted(Comparator.comparing(ChunkReference::score).reversed())
-                .limit(topK)
                 .toList();
+    }
+
+    private List<ChunkReference> deduplicateByCanonicalKey(List<ChunkReference> ranked) {
+        Map<String, ChunkReference> bestByCanonicalKey = new LinkedHashMap<>();
+        List<ChunkReference> result = new ArrayList<>();
+
+        for (ChunkReference ref : ranked) {
+            String key = ref.canonicalKey();
+            if (key == null || key.isBlank()) {
+                result.add(ref);
+                continue;
+            }
+            ChunkReference existing = bestByCanonicalKey.get(key);
+            if (existing == null) {
+                bestByCanonicalKey.put(key, ref);
+                result.add(ref);
+            } else {
+                if (ref.authorityLevel() > existing.authorityLevel()
+                        || (ref.authorityLevel() == existing.authorityLevel()
+                        && ref.effectiveFrom() != null
+                        && existing.effectiveFrom() != null
+                        && ref.effectiveFrom().isAfter(existing.effectiveFrom()))) {
+                    bestByCanonicalKey.put(key, ref);
+                    int idx = result.indexOf(existing);
+                    if (idx >= 0) {
+                        result.set(idx, ref);
+                    }
+                }
+            }
+        }
+        return result.stream().limit(topK).toList();
     }
 
     private ChunkReference toFinalReference(RankedReference ranked) {
@@ -674,7 +848,14 @@ public class KnowledgeBaseApplicationService implements
                 ref.chunkText(),
                 score,
                 ref.startPosition(),
-                ref.endPosition()
+                ref.endPosition(),
+                ref.canonicalKey(),
+                ref.versionLabel(),
+                ref.effectiveFrom(),
+                ref.effectiveTo(),
+                ref.lifecycleStatus(),
+                ref.authorityLevel(),
+                ref.jurisdiction()
         );
     }
 

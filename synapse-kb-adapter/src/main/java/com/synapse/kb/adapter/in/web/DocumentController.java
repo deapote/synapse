@@ -1,13 +1,20 @@
 package com.synapse.kb.adapter.in.web;
 
 import com.synapse.kb.adapter.in.web.dto.DocumentResponse;
+import com.synapse.kb.adapter.in.web.dto.SupersedeDocumentRequest;
+import com.synapse.kb.adapter.in.web.dto.UpdateDocumentMetadataRequest;
 import com.synapse.kb.model.Document;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentLifecycleStatus;
+import com.synapse.kb.model.DocumentMetadata;
+import com.synapse.kb.model.DocumentSourceType;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.in.DeleteDocumentUseCase;
 import com.synapse.kb.port.in.IngestDocumentUseCase;
 import com.synapse.kb.port.in.ListDocumentUseCase;
 import com.synapse.kb.port.in.RetryDocumentIngestionUseCase;
+import com.synapse.kb.port.in.SupersedeDocumentUseCase;
+import com.synapse.kb.port.in.UpdateDocumentMetadataUseCase;
 import com.synapse.shared.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.buffer.DataBufferUtils;
@@ -21,6 +28,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -33,6 +41,8 @@ public class DocumentController {
     private final ListDocumentUseCase listUseCase;
     private final DeleteDocumentUseCase deleteUseCase;
     private final RetryDocumentIngestionUseCase retryUseCase;
+    private final UpdateDocumentMetadataUseCase updateMetadataUseCase;
+    private final SupersedeDocumentUseCase supersedeUseCase;
     private final long maxFileBytes;
     private final List<String> allowedExtensions;
     private final List<String> allowedContentTypes;
@@ -42,6 +52,8 @@ public class DocumentController {
                               ListDocumentUseCase listUseCase,
                               DeleteDocumentUseCase deleteUseCase,
                               RetryDocumentIngestionUseCase retryUseCase,
+                              UpdateDocumentMetadataUseCase updateMetadataUseCase,
+                              SupersedeDocumentUseCase supersedeUseCase,
                               @Value("${synapse.upload.max-file-bytes:20971520}") long maxFileBytes,
                               @Value("${synapse.upload.allowed-extensions:pdf,doc,docx,txt,md}") List<String> allowedExtensions,
                               @Value("${synapse.upload.allowed-content-types:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown}") List<String> allowedContentTypes,
@@ -50,6 +62,8 @@ public class DocumentController {
         this.listUseCase = listUseCase;
         this.deleteUseCase = deleteUseCase;
         this.retryUseCase = retryUseCase;
+        this.updateMetadataUseCase = updateMetadataUseCase;
+        this.supersedeUseCase = supersedeUseCase;
         this.maxFileBytes = maxFileBytes;
         this.allowedExtensions = allowedExtensions;
         this.allowedContentTypes = allowedContentTypes;
@@ -59,7 +73,15 @@ public class DocumentController {
     @PostMapping(value = "/api/knowledge-bases/{kbId}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Mono<DocumentResponse> upload(
             @PathVariable String kbId,
-            @RequestPart("file") FilePart filePart
+            @RequestPart("file") FilePart filePart,
+            @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String canonicalKey,
+            @RequestParam(required = false) String versionLabel,
+            @RequestParam(required = false) String effectiveFrom,
+            @RequestParam(required = false) String effectiveTo,
+            @RequestParam(required = false) String supersedesDocumentId,
+            @RequestParam(required = false) Integer authorityLevel,
+            @RequestParam(required = false) String jurisdiction
     ) {
         return DataBufferUtils.join(filePart.content(), maxJoinBytes())
                 .map(dataBuffer -> {
@@ -81,6 +103,10 @@ public class DocumentController {
                     String contentHash = bytesToHex(MessageDigest.getInstance("SHA-256").digest(bytes));
                     InputStream content = new ByteArrayInputStream(bytes);
 
+                    DocumentMetadata metadata = parseMetadata(
+                            sourceType, canonicalKey, versionLabel, effectiveFrom, effectiveTo,
+                            supersedesDocumentId, authorityLevel, jurisdiction);
+
                     IngestDocumentUseCase.IngestDocumentCommand command =
                             new IngestDocumentUseCase.IngestDocumentCommand(
                                     new KnowledgeBaseId(kbId),
@@ -88,21 +114,13 @@ public class DocumentController {
                                     contentType,
                                     bytes.length,
                                     contentHash,
-                                    content
+                                    content,
+                                    metadata
                             );
 
                     DocumentId documentId = ingestUseCase.ingest(command);
 
-                    return new DocumentResponse(
-                            documentId.value(),
-                            kbId,
-                            fileName,
-                            contentType,
-                            bytes.length,
-                            "PENDING",
-                            0,
-                            null
-                    );
+                    return toResponse(documentId, kbId, fileName, contentType, bytes.length);
                 }));
     }
 
@@ -116,16 +134,7 @@ public class DocumentController {
             validatePage(page, size);
             List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId), page, size);
             return docs.stream()
-                    .map(doc -> new DocumentResponse(
-                            doc.getId().value(),
-                            doc.getKnowledgeBaseId().value(),
-                            doc.getFileName(),
-                            doc.getFileType(),
-                            doc.getFileSize(),
-                            doc.getStatus().name(),
-                            doc.getChunkCount(),
-                            doc.getUploadedAt()
-                    ))
+                    .map(this::toResponse)
                     .toList();
         });
     }
@@ -138,6 +147,58 @@ public class DocumentController {
     @PostMapping("/api/documents/{id}/retry")
     public Mono<DocumentResponse> retry(@PathVariable String id) {
         return SaTokenReactorBridge.blockingCall(() -> toResponse(retryUseCase.retry(new DocumentId(id))));
+    }
+
+    @PutMapping("/api/documents/{id}/metadata")
+    public Mono<DocumentResponse> updateMetadata(
+            @PathVariable String id,
+            @RequestBody UpdateDocumentMetadataRequest request
+    ) {
+        return SaTokenReactorBridge.blockingCall(() -> {
+            DocumentMetadata metadata = new DocumentMetadata(
+                    request.sourceType() != null ? DocumentSourceType.valueOf(request.sourceType()) : null,
+                    request.canonicalKey(),
+                    request.versionLabel(),
+                    request.effectiveFrom(),
+                    request.effectiveTo(),
+                    request.supersedesDocumentId(),
+                    request.authorityLevel(),
+                    request.jurisdiction()
+            );
+            Document document = updateMetadataUseCase.updateMetadata(new DocumentId(id), metadata);
+            return toResponse(document);
+        });
+    }
+
+    @PostMapping("/api/documents/{id}/supersede")
+    public Mono<Void> supersede(
+            @PathVariable String id,
+            @RequestBody SupersedeDocumentRequest request
+    ) {
+        return SaTokenReactorBridge.blockingAction(() ->
+                supersedeUseCase.supersede(
+                        new DocumentId(id),
+                        new DocumentId(request.newDocumentId()),
+                        request.effectiveTo()
+                ));
+    }
+
+    private DocumentMetadata parseMetadata(String sourceType, String canonicalKey, String versionLabel,
+                                            String effectiveFrom, String effectiveTo, String supersedesDocumentId,
+                                            Integer authorityLevel, String jurisdiction) {
+        DocumentSourceType type = null;
+        if (sourceType != null && !sourceType.isBlank()) {
+            type = DocumentSourceType.valueOf(sourceType.toUpperCase());
+        }
+        LocalDate from = null;
+        if (effectiveFrom != null && !effectiveFrom.isBlank()) {
+            from = LocalDate.parse(effectiveFrom);
+        }
+        LocalDate to = null;
+        if (effectiveTo != null && !effectiveTo.isBlank()) {
+            to = LocalDate.parse(effectiveTo);
+        }
+        return new DocumentMetadata(type, canonicalKey, versionLabel, from, to, supersedesDocumentId, authorityLevel, jurisdiction);
     }
 
     private String bytesToHex(byte[] bytes) throws NoSuchAlgorithmException {
@@ -190,16 +251,33 @@ public class DocumentController {
         }
     }
 
-    private DocumentResponse toResponse(Document doc) {
+    private DocumentResponse toResponse(Document document) {
         return new DocumentResponse(
-                doc.getId().value(),
-                doc.getKnowledgeBaseId().value(),
-                doc.getFileName(),
-                doc.getFileType(),
-                doc.getFileSize(),
-                doc.getStatus().name(),
-                doc.getChunkCount(),
-                doc.getUploadedAt()
+                document.getId().value(),
+                document.getKnowledgeBaseId().value(),
+                document.getFileName(),
+                document.getFileType(),
+                document.getFileSize(),
+                document.getStatus().name(),
+                document.getChunkCount(),
+                document.getUploadedAt(),
+                document.getSourceType() != null ? document.getSourceType().name() : null,
+                document.getCanonicalKey(),
+                document.getVersionLabel(),
+                document.getEffectiveFrom(),
+                document.getEffectiveTo(),
+                document.getLifecycleStatus() != null ? document.getLifecycleStatus().name() : null,
+                document.getSupersedesDocumentId(),
+                document.getAuthorityLevel(),
+                document.getJurisdiction()
+        );
+    }
+
+    private DocumentResponse toResponse(DocumentId documentId, String kbId, String fileName,
+                                         String contentType, long fileSize) {
+        return new DocumentResponse(
+                documentId.value(), kbId, fileName, contentType, fileSize,
+                "PENDING", 0, null, null, null, null, null, null, null, null, 0, null
         );
     }
 }

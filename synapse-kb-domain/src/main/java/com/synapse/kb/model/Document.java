@@ -3,6 +3,8 @@ package com.synapse.kb.model;
 import com.synapse.shared.exception.DomainException;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
@@ -25,6 +27,16 @@ public class Document {
     private Instant processingStartAt;
     private Instant processingCompleteAt;
 
+    private DocumentSourceType sourceType;
+    private String canonicalKey;
+    private String versionLabel;
+    private LocalDate effectiveFrom;
+    private LocalDate effectiveTo;
+    private DocumentLifecycleStatus lifecycleStatus;
+    private String supersedesDocumentId;
+    private int authorityLevel;
+    private String jurisdiction;
+
     /** 文档处理状态机规则。 */
     private static final Map<DocumentStatus, Set<DocumentStatus>> VALID_TRANSITIONS = Map.of(
             DocumentStatus.PENDING, EnumSet.of(DocumentStatus.PROCESSING),
@@ -43,13 +55,25 @@ public class Document {
         this.uploadedAt = uploadedAt;
         this.status = DocumentStatus.PENDING;
         this.chunkCount = 0;
+        this.sourceType = DocumentSourceType.GENERAL;
+        this.lifecycleStatus = DocumentLifecycleStatus.ACTIVE;
+        this.effectiveFrom = LocalDate.ofInstant(uploadedAt, ZoneId.systemDefault());
+        this.authorityLevel = 0;
     }
 
     public static Document create(KnowledgeBaseId knowledgeBaseId, String fileName, String fileType, long fileSize, String contentHash) {
+        return create(knowledgeBaseId, fileName, fileType, fileSize, contentHash, new DocumentMetadata());
+    }
+
+    public static Document create(KnowledgeBaseId knowledgeBaseId, String fileName, String fileType, long fileSize, String contentHash, DocumentMetadata metadata) {
         if (fileName == null || fileName.isBlank()) {
             throw new DomainException("文件名不能为空");
         }
-        return new Document(DocumentId.generate(), knowledgeBaseId, fileName, fileType, fileSize, contentHash, Instant.now());
+        Document doc = new Document(DocumentId.generate(), knowledgeBaseId, fileName, fileType, fileSize, contentHash, Instant.now());
+        if (metadata != null) {
+            doc.applyMetadata(metadata);
+        }
+        return doc;
     }
 
     public void attachContentObject(String contentObjectId) {
@@ -73,7 +97,16 @@ public class Document {
             int chunkCount,
             String contentObjectId,
             Instant processingStartAt,
-            Instant processingCompleteAt) {
+            Instant processingCompleteAt,
+            DocumentSourceType sourceType,
+            String canonicalKey,
+            String versionLabel,
+            LocalDate effectiveFrom,
+            LocalDate effectiveTo,
+            DocumentLifecycleStatus lifecycleStatus,
+            String supersedesDocumentId,
+            Integer authorityLevel,
+            String jurisdiction) {
 
         Document doc = new Document(id, knowledgeBaseId, fileName, fileType, fileSize, contentHash, uploadedAt);
         doc.status = status;
@@ -82,6 +115,15 @@ public class Document {
         doc.contentObjectId = contentObjectId;
         doc.processingStartAt = processingStartAt;
         doc.processingCompleteAt = processingCompleteAt;
+        doc.sourceType = sourceType != null ? sourceType : DocumentSourceType.GENERAL;
+        doc.canonicalKey = canonicalKey;
+        doc.versionLabel = versionLabel;
+        doc.effectiveFrom = effectiveFrom != null ? effectiveFrom : LocalDate.ofInstant(uploadedAt, ZoneId.systemDefault());
+        doc.effectiveTo = effectiveTo;
+        doc.lifecycleStatus = lifecycleStatus != null ? lifecycleStatus : DocumentLifecycleStatus.ACTIVE;
+        doc.supersedesDocumentId = supersedesDocumentId;
+        doc.authorityLevel = authorityLevel != null ? authorityLevel : 0;
+        doc.jurisdiction = jurisdiction;
         return doc;
     }
 
@@ -121,6 +163,84 @@ public class Document {
             throw new DomainException("块数不能为负值");
         }
         this.chunkCount = count;
+    }
+
+    public boolean isEffectiveOn(LocalDate date) {
+        if (date == null) {
+            return false;
+        }
+        if (lifecycleStatus == DocumentLifecycleStatus.RETIRED) {
+            return false;
+        }
+        if (effectiveFrom != null && date.isBefore(effectiveFrom)) {
+            return false;
+        }
+        if (effectiveTo != null && !date.isBefore(effectiveTo)) {
+            return false;
+        }
+        return true;
+    }
+
+    public void updateMetadata(DocumentMetadata metadata) {
+        if (metadata == null) {
+            return;
+        }
+        applyMetadata(metadata);
+    }
+
+    private void applyMetadata(DocumentMetadata metadata) {
+        if (metadata.sourceType() != null) {
+            this.sourceType = metadata.sourceType();
+        }
+        if (metadata.canonicalKey() != null) {
+            this.canonicalKey = metadata.canonicalKey();
+        }
+        if (metadata.versionLabel() != null) {
+            this.versionLabel = metadata.versionLabel();
+        }
+        if (metadata.effectiveFrom() != null) {
+            this.effectiveFrom = metadata.effectiveFrom();
+        }
+        if (metadata.effectiveTo() != null) {
+            this.effectiveTo = metadata.effectiveTo();
+        }
+        if (metadata.supersedesDocumentId() != null) {
+            this.supersedesDocumentId = metadata.supersedesDocumentId();
+        }
+        if (metadata.authorityLevel() != null) {
+            this.authorityLevel = metadata.authorityLevel();
+        }
+        if (metadata.jurisdiction() != null) {
+            this.jurisdiction = metadata.jurisdiction();
+        }
+    }
+
+    public void activate() {
+        this.lifecycleStatus = DocumentLifecycleStatus.ACTIVE;
+    }
+
+    public void retire() {
+        this.lifecycleStatus = DocumentLifecycleStatus.RETIRED;
+    }
+
+    public void supersedeBy(Document newDocument, LocalDate effectiveTo) {
+        if (newDocument == null) {
+            throw new DomainException("替代文档不能为空");
+        }
+        if (!this.knowledgeBaseId.equals(newDocument.knowledgeBaseId)) {
+            throw new DomainException("被替代文档与替代文档必须属于同一知识库");
+        }
+        if (this.lifecycleStatus != DocumentLifecycleStatus.ACTIVE) {
+            throw new DomainException("仅 ACTIVE 文档可被替代");
+        }
+        if (effectiveTo == null) {
+            throw new DomainException("替代失效日期不能为空");
+        }
+        if (this.effectiveFrom != null && effectiveTo.isBefore(this.effectiveFrom)) {
+            throw new DomainException("替代失效日期不得早于文档生效日期");
+        }
+        this.effectiveTo = effectiveTo;
+        this.lifecycleStatus = DocumentLifecycleStatus.SUPERSEDED;
     }
 
     public DocumentId getId() {
@@ -173,5 +293,41 @@ public class Document {
 
     public Instant getProcessingCompleteAt() {
         return processingCompleteAt;
+    }
+
+    public DocumentSourceType getSourceType() {
+        return sourceType;
+    }
+
+    public String getCanonicalKey() {
+        return canonicalKey;
+    }
+
+    public String getVersionLabel() {
+        return versionLabel;
+    }
+
+    public LocalDate getEffectiveFrom() {
+        return effectiveFrom;
+    }
+
+    public LocalDate getEffectiveTo() {
+        return effectiveTo;
+    }
+
+    public DocumentLifecycleStatus getLifecycleStatus() {
+        return lifecycleStatus;
+    }
+
+    public String getSupersedesDocumentId() {
+        return supersedesDocumentId;
+    }
+
+    public int getAuthorityLevel() {
+        return authorityLevel;
+    }
+
+    public String getJurisdiction() {
+        return jurisdiction;
     }
 }

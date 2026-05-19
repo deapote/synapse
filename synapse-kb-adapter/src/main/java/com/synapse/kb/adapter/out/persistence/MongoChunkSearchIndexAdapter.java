@@ -6,8 +6,11 @@ import com.synapse.kb.adapter.out.persistence.entity.ChunkPostingDocument;
 import com.synapse.kb.model.ChunkReference;
 import com.synapse.kb.model.DocumentChunk;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentLifecycleStatus;
+import com.synapse.kb.model.DocumentMetadata;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.port.out.ChunkSearchIndexPort;
+import com.synapse.kb.port.out.RetrievalFilter;
 import com.synapse.shared.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -16,6 +19,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -49,11 +53,12 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     }
 
     @Override
-    public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks) {
+    public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
+                      List<DocumentChunk> chunks, DocumentMetadata metadata) {
         try {
             deleteByDocumentId(knowledgeBaseId, documentId);
             List<ChunkIndexDocument> chunkDocuments = chunks.stream()
-                    .map(chunk -> toDocument(knowledgeBaseId, documentId, documentName, chunk))
+                    .map(chunk -> toDocument(knowledgeBaseId, documentId, documentName, chunk, metadata))
                     .toList();
             repository.saveAll(chunkDocuments);
             List<ChunkPostingDocument> postings = new ArrayList<>();
@@ -81,7 +86,7 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     }
 
     @Override
-    public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK) {
+    public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK, RetrievalFilter filter) {
         List<String> queryTokens = tokenize(query);
         if (queryTokens.isEmpty()) {
             return List.of();
@@ -89,9 +94,28 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
 
         try {
             List<String> uniqueQueryTokens = new ArrayList<>(new LinkedHashSet<>(queryTokens));
+            long asOfEpochDay = filter.asOfDate().toEpochDay();
+
+            Criteria criteria = Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                    .and("token").in(uniqueQueryTokens)
+                    .and("lifecycleStatus").in("ACTIVE", "SUPERSEDED")
+                    .and("effectiveFromEpochDay").lte(asOfEpochDay)
+                    .andOperator(
+                            new Criteria().orOperator(
+                                    Criteria.where("effectiveToEpochDay").is(Long.MAX_VALUE),
+                                    Criteria.where("effectiveToEpochDay").gt(asOfEpochDay)
+                            )
+                    );
+
+            if (filter.sourceType() != null) {
+                criteria.and("sourceType").is(filter.sourceType().name());
+            }
+            if (filter.jurisdiction() != null && !filter.jurisdiction().isBlank()) {
+                criteria.and("jurisdiction").is(filter.jurisdiction());
+            }
+
             List<ChunkPostingDocument> postings = mongoTemplate.find(
-                    new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
-                            .and("token").in(uniqueQueryTokens)).limit(maxCandidates),
+                    new Query(criteria).limit(maxCandidates),
                     ChunkPostingDocument.class
             );
             if (postings.isEmpty()) {
@@ -149,10 +173,28 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
         }
     }
 
+    @Override
+    public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {
+        throw new UnsupportedOperationException("v1 不支持在线修改关键词索引元数据，请通过重新摄入新版本完成时效变更");
+    }
+
     private ChunkIndexDocument toDocument(KnowledgeBaseId knowledgeBaseId, DocumentId documentId,
-                                          String documentName, DocumentChunk chunk) {
+                                          String documentName, DocumentChunk chunk, DocumentMetadata metadata) {
         List<String> tokens = tokenize(chunk.text());
         Map<String, Integer> frequencies = termFrequencies(tokens);
+
+        long effectiveFromEpochDay = metadata.effectiveFrom() != null
+                ? metadata.effectiveFrom().toEpochDay()
+                : LocalDate.now().toEpochDay();
+        long effectiveToEpochDay = metadata.effectiveTo() != null
+                ? metadata.effectiveTo().toEpochDay()
+                : Long.MAX_VALUE;
+        String lifecycleStatus = DocumentLifecycleStatus.ACTIVE.name();
+        String canonicalKey = metadata.canonicalKey() != null ? metadata.canonicalKey() : "";
+        String versionLabel = metadata.versionLabel() != null ? metadata.versionLabel() : "";
+        int authorityLevel = metadata.authorityLevel() != null ? metadata.authorityLevel() : 0;
+        String jurisdiction = metadata.jurisdiction() != null ? metadata.jurisdiction() : "";
+        String sourceType = metadata.sourceType() != null ? metadata.sourceType().name() : "";
 
         ChunkIndexDocument document = new ChunkIndexDocument();
         document.setId(knowledgeBaseId.value() + ":" + documentId.value() + ":" + chunk.index());
@@ -166,6 +208,14 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
         document.setTokens(new ArrayList<>(frequencies.keySet()));
         document.setTermFrequencies(frequencies);
         document.setTokenCount(tokens.size());
+        document.setEffectiveFromEpochDay(effectiveFromEpochDay);
+        document.setEffectiveToEpochDay(effectiveToEpochDay);
+        document.setLifecycleStatus(lifecycleStatus);
+        document.setCanonicalKey(canonicalKey);
+        document.setVersionLabel(versionLabel);
+        document.setAuthorityLevel(authorityLevel);
+        document.setJurisdiction(jurisdiction);
+        document.setSourceType(sourceType);
         return document;
     }
 
@@ -231,6 +281,16 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     }
 
     private ChunkReference toReference(PostingCandidate document, float score) {
+        LocalDate effectiveFrom = document.effectiveFromEpochDay != 0 && document.effectiveFromEpochDay != Long.MAX_VALUE
+                ? LocalDate.ofEpochDay(document.effectiveFromEpochDay)
+                : null;
+        LocalDate effectiveTo = document.effectiveToEpochDay != 0 && document.effectiveToEpochDay != Long.MAX_VALUE
+                ? LocalDate.ofEpochDay(document.effectiveToEpochDay)
+                : null;
+        DocumentLifecycleStatus lifecycleStatus = document.lifecycleStatus != null && !document.lifecycleStatus.isBlank()
+                ? DocumentLifecycleStatus.valueOf(document.lifecycleStatus)
+                : DocumentLifecycleStatus.ACTIVE;
+
         return new ChunkReference(
                 document.documentId,
                 document.documentName,
@@ -238,7 +298,14 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
                 document.chunkText,
                 score,
                 document.startPosition,
-                document.endPosition
+                document.endPosition,
+                document.canonicalKey,
+                document.versionLabel,
+                effectiveFrom,
+                effectiveTo,
+                lifecycleStatus,
+                document.authorityLevel,
+                document.jurisdiction
         );
     }
 
@@ -255,6 +322,14 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
         posting.setEndPosition(chunk.getEndPosition());
         posting.setTf(tf);
         posting.setTokenCount(chunk.getTokenCount());
+        posting.setEffectiveFromEpochDay(chunk.getEffectiveFromEpochDay());
+        posting.setEffectiveToEpochDay(chunk.getEffectiveToEpochDay());
+        posting.setLifecycleStatus(chunk.getLifecycleStatus());
+        posting.setCanonicalKey(chunk.getCanonicalKey());
+        posting.setVersionLabel(chunk.getVersionLabel());
+        posting.setAuthorityLevel(chunk.getAuthorityLevel());
+        posting.setJurisdiction(chunk.getJurisdiction());
+        posting.setSourceType(chunk.getSourceType());
         return posting;
     }
 
@@ -340,6 +415,14 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
         private final int startPosition;
         private final int endPosition;
         private final int tokenCount;
+        private final long effectiveFromEpochDay;
+        private final long effectiveToEpochDay;
+        private final String lifecycleStatus;
+        private final String canonicalKey;
+        private final String versionLabel;
+        private final int authorityLevel;
+        private final String jurisdiction;
+        private final String sourceType;
         private final Map<String, Integer> termFrequencies = new HashMap<>();
 
         private PostingCandidate(ChunkPostingDocument posting) {
@@ -350,6 +433,14 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
             this.startPosition = posting.getStartPosition();
             this.endPosition = posting.getEndPosition();
             this.tokenCount = posting.getTokenCount();
+            this.effectiveFromEpochDay = posting.getEffectiveFromEpochDay();
+            this.effectiveToEpochDay = posting.getEffectiveToEpochDay();
+            this.lifecycleStatus = posting.getLifecycleStatus();
+            this.canonicalKey = posting.getCanonicalKey();
+            this.versionLabel = posting.getVersionLabel();
+            this.authorityLevel = posting.getAuthorityLevel();
+            this.jurisdiction = posting.getJurisdiction();
+            this.sourceType = posting.getSourceType();
         }
     }
 }

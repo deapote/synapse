@@ -70,7 +70,7 @@ public class StreamingQueryController {
             @RequestBody QueryRequest request
     ) {
         return SaTokenReactorBridge.blockingCall(
-                        () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query(), request.sessionId())))
+                        () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query(), request.sessionId(), request.asOfDate())))
                 .flatMapMany(this::buildSseFlux)
                 .onErrorResume(e -> {
                     sseErrorCounter.increment();
@@ -151,7 +151,14 @@ public class StreamingQueryController {
                 ref.score(),
                 ref.startPosition(),
                 ref.endPosition(),
-                used
+                used,
+                ref.canonicalKey(),
+                ref.versionLabel(),
+                ref.effectiveFrom(),
+                ref.effectiveTo(),
+                ref.lifecycleStatus() != null ? ref.lifecycleStatus().name() : null,
+                ref.authorityLevel(),
+                ref.jurisdiction()
         );
     }
 

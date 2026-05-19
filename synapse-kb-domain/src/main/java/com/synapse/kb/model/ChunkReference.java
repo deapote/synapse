@@ -2,6 +2,8 @@ package com.synapse.kb.model;
 
 import com.synapse.shared.exception.DomainException;
 
+import java.time.LocalDate;
+
 /** RAG 检索引用片段。 */
 public record ChunkReference(
         String documentId,
@@ -10,7 +12,14 @@ public record ChunkReference(
         String chunkText,
         float score,
         int startPosition,
-        int endPosition
+        int endPosition,
+        String canonicalKey,
+        String versionLabel,
+        LocalDate effectiveFrom,
+        LocalDate effectiveTo,
+        DocumentLifecycleStatus lifecycleStatus,
+        int authorityLevel,
+        String jurisdiction
 ) {
 
     public ChunkReference {
@@ -29,5 +38,12 @@ public record ChunkReference(
         if (startPosition < 0 || endPosition < startPosition) {
             throw new DomainException("无效的位置范围");
         }
+    }
+
+    /** 向后兼容：不包含时效字段的构造。 */
+    public ChunkReference(String documentId, String documentName, int chunkIndex,
+                          String chunkText, float score, int startPosition, int endPosition) {
+        this(documentId, documentName, chunkIndex, chunkText, score, startPosition, endPosition,
+                null, null, null, null, null, 0, null);
     }
 }

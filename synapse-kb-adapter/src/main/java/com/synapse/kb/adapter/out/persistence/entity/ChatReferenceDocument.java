@@ -1,5 +1,7 @@
 package com.synapse.kb.adapter.out.persistence.entity;
 
+import java.time.LocalDate;
+
 public class ChatReferenceDocument {
     private String documentId;
     private String documentName;
@@ -8,6 +10,13 @@ public class ChatReferenceDocument {
     private float score;
     private int startPosition;
     private int endPosition;
+    private String canonicalKey;
+    private String versionLabel;
+    private LocalDate effectiveFrom;
+    private LocalDate effectiveTo;
+    private String lifecycleStatus;
+    private int authorityLevel;
+    private String jurisdiction;
 
     public String getDocumentId() {
         return documentId;
@@ -63,5 +72,61 @@ public class ChatReferenceDocument {
 
     public void setEndPosition(int endPosition) {
         this.endPosition = endPosition;
+    }
+
+    public String getCanonicalKey() {
+        return canonicalKey;
+    }
+
+    public void setCanonicalKey(String canonicalKey) {
+        this.canonicalKey = canonicalKey;
+    }
+
+    public String getVersionLabel() {
+        return versionLabel;
+    }
+
+    public void setVersionLabel(String versionLabel) {
+        this.versionLabel = versionLabel;
+    }
+
+    public LocalDate getEffectiveFrom() {
+        return effectiveFrom;
+    }
+
+    public void setEffectiveFrom(LocalDate effectiveFrom) {
+        this.effectiveFrom = effectiveFrom;
+    }
+
+    public LocalDate getEffectiveTo() {
+        return effectiveTo;
+    }
+
+    public void setEffectiveTo(LocalDate effectiveTo) {
+        this.effectiveTo = effectiveTo;
+    }
+
+    public String getLifecycleStatus() {
+        return lifecycleStatus;
+    }
+
+    public void setLifecycleStatus(String lifecycleStatus) {
+        this.lifecycleStatus = lifecycleStatus;
+    }
+
+    public int getAuthorityLevel() {
+        return authorityLevel;
+    }
+
+    public void setAuthorityLevel(int authorityLevel) {
+        this.authorityLevel = authorityLevel;
+    }
+
+    public String getJurisdiction() {
+        return jurisdiction;
+    }
+
+    public void setJurisdiction(String jurisdiction) {
+        this.jurisdiction = jurisdiction;
     }
 }

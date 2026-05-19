@@ -3,14 +3,21 @@ package com.synapse.kb.adapter.out.persistence;
 import com.synapse.kb.adapter.out.persistence.entity.DocumentDocument;
 import com.synapse.kb.model.Document;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentLifecycleStatus;
+import com.synapse.kb.model.DocumentSourceType;
 import com.synapse.kb.model.DocumentStatus;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.repository.DocumentRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,9 +28,12 @@ import java.util.Optional;
 public class MongoDocumentRepository implements DocumentRepository {
 
     private final DocumentMongoRepository documentMongoRepository;
+    private final MongoTemplate mongoTemplate;
 
-    public MongoDocumentRepository(DocumentMongoRepository documentMongoRepository) {
+    public MongoDocumentRepository(DocumentMongoRepository documentMongoRepository,
+                                    MongoTemplate mongoTemplate) {
         this.documentMongoRepository = documentMongoRepository;
+        this.mongoTemplate = mongoTemplate;
     }
 
     @Override
@@ -84,6 +94,19 @@ public class MongoDocumentRepository implements DocumentRepository {
                 .toList();
     }
 
+    @Override
+    public List<Document> findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(
+            KnowledgeBaseId knowledgeBaseId, String canonicalKey, DocumentLifecycleStatus status) {
+        Query query = new Query(
+                Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                        .and("canonicalKey").is(canonicalKey)
+                        .and("lifecycleStatus").is(status.name())
+        );
+        return mongoTemplate.find(query, DocumentDocument.class).stream()
+                .map(this::toEntity)
+                .toList();
+    }
+
     private DocumentDocument toDocument(Document document) {
         DocumentDocument doc = new DocumentDocument();
         doc.setId(document.getId().value());
@@ -99,6 +122,15 @@ public class MongoDocumentRepository implements DocumentRepository {
         doc.setContentObjectId(document.getContentObjectId());
         doc.setProcessingStartAt(document.getProcessingStartAt());
         doc.setProcessingCompleteAt(document.getProcessingCompleteAt());
+        doc.setSourceType(document.getSourceType().name());
+        doc.setCanonicalKey(document.getCanonicalKey());
+        doc.setVersionLabel(document.getVersionLabel());
+        doc.setEffectiveFrom(document.getEffectiveFrom());
+        doc.setEffectiveTo(document.getEffectiveTo());
+        doc.setLifecycleStatus(document.getLifecycleStatus().name());
+        doc.setSupersedesDocumentId(document.getSupersedesDocumentId());
+        doc.setAuthorityLevel(document.getAuthorityLevel());
+        doc.setJurisdiction(document.getJurisdiction());
         return doc;
     }
 
@@ -106,6 +138,22 @@ public class MongoDocumentRepository implements DocumentRepository {
         DocumentStatus status = doc.getStatus() != null
                 ? DocumentStatus.valueOf(doc.getStatus())
                 : DocumentStatus.PENDING;
+
+        DocumentSourceType sourceType = doc.getSourceType() != null
+                ? DocumentSourceType.valueOf(doc.getSourceType())
+                : DocumentSourceType.GENERAL;
+
+        DocumentLifecycleStatus lifecycleStatus = doc.getLifecycleStatus() != null
+                ? DocumentLifecycleStatus.valueOf(doc.getLifecycleStatus())
+                : DocumentLifecycleStatus.ACTIVE;
+
+        LocalDate effectiveFrom = doc.getEffectiveFrom() != null
+                ? doc.getEffectiveFrom()
+                : LocalDate.ofInstant(doc.getUploadedAt(), ZoneId.systemDefault());
+
+        Integer authorityLevel = doc.getAuthorityLevel() != null
+                ? doc.getAuthorityLevel()
+                : 0;
 
         return Document.reconstruct(
                 new DocumentId(doc.getId()),
@@ -120,7 +168,16 @@ public class MongoDocumentRepository implements DocumentRepository {
                 doc.getChunkCount(),
                 doc.getContentObjectId(),
                 doc.getProcessingStartAt(),
-                doc.getProcessingCompleteAt()
+                doc.getProcessingCompleteAt(),
+                sourceType,
+                doc.getCanonicalKey(),
+                doc.getVersionLabel(),
+                effectiveFrom,
+                doc.getEffectiveTo(),
+                lifecycleStatus,
+                doc.getSupersedesDocumentId(),
+                authorityLevel,
+                doc.getJurisdiction()
         );
     }
 }

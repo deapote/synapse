@@ -2,11 +2,14 @@ package com.synapse.kb.model;
 
 import com.synapse.shared.exception.DomainException;
 
+import java.time.LocalDate;
+
 /** 单次知识库查询；knowledgeBaseId 是检索隔离边界。 */
 public record Query(
         KnowledgeBaseId knowledgeBaseId,
         String text,
-        String sessionId
+        String sessionId,
+        LocalDate asOfDate
 ) {
 
     public Query {
@@ -20,6 +23,10 @@ public record Query(
     }
 
     public Query(KnowledgeBaseId knowledgeBaseId, String text) {
-        this(knowledgeBaseId, text, null);
+        this(knowledgeBaseId, text, null, null);
+    }
+
+    public Query(KnowledgeBaseId knowledgeBaseId, String text, String sessionId) {
+        this(knowledgeBaseId, text, sessionId, null);
     }
 }

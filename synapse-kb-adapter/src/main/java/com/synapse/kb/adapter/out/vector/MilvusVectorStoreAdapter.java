@@ -5,7 +5,10 @@ import com.google.gson.JsonObject;
 import com.synapse.kb.model.ChunkReference;
 import com.synapse.kb.model.DocumentChunk;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentLifecycleStatus;
+import com.synapse.kb.model.DocumentMetadata;
 import com.synapse.kb.model.KnowledgeBaseId;
+import com.synapse.kb.port.out.RetrievalFilter;
 import com.synapse.kb.port.out.VectorStorePort;
 import com.synapse.shared.exception.DomainException;
 import io.github.resilience4j.bulkhead.annotation.Bulkhead;
@@ -30,6 +33,7 @@ import io.milvus.v2.service.vector.response.SearchResp;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -41,11 +45,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
 
     private final String host;
     private final int port;
-    private final String legacyCollectionName;
-    private final String v2CollectionName;
-    private final boolean v2Enabled;
-    private final boolean dualWrite;
-    private final boolean readV2;
+    private final String v3CollectionName;
     private final int vectorDim;
     private final long connectTimeoutMs;
     private final long rpcDeadlineMs;
@@ -62,11 +62,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     public MilvusVectorStoreAdapter(
             @Value("${milvus.host:127.0.0.1}") String host,
             @Value("${milvus.port:19530}") int port,
-            @Value("${milvus.collection-name:synapse_document_chunks}") String legacyCollectionName,
-            @Value("${milvus.v2.collection-name:synapse_document_chunks_v2}") String v2CollectionName,
-            @Value("${milvus.v2.enabled:true}") boolean v2Enabled,
-            @Value("${milvus.v2.dual-write:true}") boolean dualWrite,
-            @Value("${milvus.v2.read-enabled:true}") boolean readV2,
+            @Value("${milvus.v3.collection-name:synapse_document_chunks_v3}") String v3CollectionName,
             @Value("${milvus.embedding-dimension:1536}") int vectorDim,
             @Value("${milvus.connect-timeout-ms:5000}") long connectTimeoutMs,
             @Value("${milvus.rpc-deadline-ms:30000}") long rpcDeadlineMs,
@@ -78,11 +74,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
             MeterRegistry meterRegistry) {
         this.host = host;
         this.port = port;
-        this.legacyCollectionName = legacyCollectionName;
-        this.v2CollectionName = v2CollectionName;
-        this.v2Enabled = v2Enabled;
-        this.dualWrite = dualWrite;
-        this.readV2 = readV2;
+        this.v3CollectionName = v3CollectionName;
         this.vectorDim = vectorDim;
         this.connectTimeoutMs = connectTimeoutMs;
         this.rpcDeadlineMs = rpcDeadlineMs;
@@ -110,28 +102,14 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                     .rpcDeadlineMs(rpcDeadlineMs)
                     .build();
             this.client = new MilvusClientV2(config);
-        initLegacyCollection();
-        loadCollectionIfNeeded(legacyCollectionName);
-        if (v2Enabled) {
-            initV2Collection();
-            loadCollectionIfNeeded(v2CollectionName);
-        }
+            initV3Collection();
+            loadCollectionIfNeeded(v3CollectionName);
             initialized.set(true);
         }
     }
 
-    private void initLegacyCollection() {
-        initCollection(legacyCollectionName, false, IndexParam.IndexType.IVF_FLAT, Map.of("nlist", 128));
-    }
-
-    private void initV2Collection() {
-        initCollection(v2CollectionName, true, IndexParam.IndexType.HNSW,
-                Map.of("M", hnswM, "efConstruction", hnswEfConstruction));
-    }
-
-    private void initCollection(String collection, boolean partitionKey, IndexParam.IndexType vectorIndex,
-                                Map<String, Object> vectorParams) {
-        Boolean exists = client.hasCollection(HasCollectionReq.builder().collectionName(collection).build());
+    private void initV3Collection() {
+        Boolean exists = client.hasCollection(HasCollectionReq.builder().collectionName(v3CollectionName).build());
         if (Boolean.TRUE.equals(exists)) {
             return;
         }
@@ -142,7 +120,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 .isPrimaryKey(true).maxLength(64).build());
         schema.addField(AddFieldReq.builder()
                 .fieldName("knowledgeBaseId").dataType(DataType.VarChar)
-                .isPartitionKey(partitionKey).maxLength(64).build());
+                .isPartitionKey(true).maxLength(64).build());
         schema.addField(AddFieldReq.builder()
                 .fieldName("documentId").dataType(DataType.VarChar)
                 .maxLength(64).build());
@@ -161,13 +139,34 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 .fieldName("startPosition").dataType(DataType.Int32).build());
         schema.addField(AddFieldReq.builder()
                 .fieldName("endPosition").dataType(DataType.Int32).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("effectiveFromEpochDay").dataType(DataType.Int64).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("effectiveToEpochDay").dataType(DataType.Int64).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("lifecycleStatus").dataType(DataType.VarChar)
+                .maxLength(16).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("canonicalKey").dataType(DataType.VarChar)
+                .maxLength(256).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("versionLabel").dataType(DataType.VarChar)
+                .maxLength(64).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("authorityLevel").dataType(DataType.Int32).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("jurisdiction").dataType(DataType.VarChar)
+                .maxLength(128).build());
+        schema.addField(AddFieldReq.builder()
+                .fieldName("sourceType").dataType(DataType.VarChar)
+                .maxLength(16).build());
 
         List<IndexParam> indexes = new ArrayList<>();
         indexes.add(IndexParam.builder()
                 .fieldName("vector")
-                .indexType(vectorIndex)
+                .indexType(IndexParam.IndexType.HNSW)
                 .metricType(IndexParam.MetricType.COSINE)
-                .extraParams(vectorParams)
+                .extraParams(Map.of("M", hnswM, "efConstruction", hnswEfConstruction))
                 .build());
         indexes.add(IndexParam.builder()
                 .fieldName("knowledgeBaseId")
@@ -177,9 +176,29 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
                 .fieldName("documentId")
                 .indexType(IndexParam.IndexType.TRIE)
                 .build());
+        indexes.add(IndexParam.builder()
+                .fieldName("effectiveFromEpochDay")
+                .indexType(IndexParam.IndexType.STL_SORT)
+                .build());
+        indexes.add(IndexParam.builder()
+                .fieldName("effectiveToEpochDay")
+                .indexType(IndexParam.IndexType.STL_SORT)
+                .build());
+        indexes.add(IndexParam.builder()
+                .fieldName("lifecycleStatus")
+                .indexType(IndexParam.IndexType.TRIE)
+                .build());
+        indexes.add(IndexParam.builder()
+                .fieldName("canonicalKey")
+                .indexType(IndexParam.IndexType.TRIE)
+                .build());
+        indexes.add(IndexParam.builder()
+                .fieldName("sourceType")
+                .indexType(IndexParam.IndexType.TRIE)
+                .build());
 
         client.createCollection(CreateCollectionReq.builder()
-                .collectionName(collection)
+                .collectionName(v3CollectionName)
                 .collectionSchema(schema)
                 .indexParams(indexes)
                 .build());
@@ -204,17 +223,14 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     @Retry(name = "milvus")
     @Bulkhead(name = "milvus")
     public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
-                      List<DocumentChunk> chunks, List<float[]> embeddings) {
+                      List<DocumentChunk> chunks, List<float[]> embeddings, DocumentMetadata metadata) {
         ensureInitialized();
         if (chunks.size() != embeddings.size()) {
             throw new DomainException("分块数量与向量数量不匹配: " + chunks.size() + " vs " + embeddings.size());
         }
-        List<JsonObject> data = toRows(knowledgeBaseId, documentId, documentName, chunks, embeddings);
+        List<JsonObject> data = toRows(knowledgeBaseId, documentId, documentName, chunks, embeddings, metadata);
         try {
-            insert(legacyCollectionName, data);
-            if (v2Enabled && dualWrite) {
-                insert(v2CollectionName, data);
-            }
+            insert(v3CollectionName, data);
         } catch (Exception e) {
             throw new DomainException("向量存储失败", e);
         }
@@ -224,18 +240,10 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     @CircuitBreaker(name = "milvus")
     @Retry(name = "milvus")
     @Bulkhead(name = "milvus")
-    public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK) {
+    public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding, int topK, RetrievalFilter filter) {
         ensureInitialized();
         try {
-            return searchTimer.record(() -> {
-                List<ChunkReference> results = v2Enabled && readV2
-                        ? searchCollection(v2CollectionName, knowledgeBaseId, queryEmbedding, topK, true)
-                        : List.of();
-                if (!results.isEmpty()) {
-                    return results;
-                }
-                return searchCollection(legacyCollectionName, knowledgeBaseId, queryEmbedding, topK, false);
-            });
+            return searchTimer.record(() -> searchCollection(v3CollectionName, knowledgeBaseId, queryEmbedding, topK, filter));
         } catch (Exception e) {
             throw new DomainException("向量检索失败", e);
         }
@@ -247,11 +255,15 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     @Bulkhead(name = "milvus")
     public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) {
         ensureInitialized();
-        boolean legacyDeleted = deleteQuietly(legacyCollectionName, knowledgeBaseId, documentId);
-        boolean v2Deleted = !v2Enabled || deleteQuietly(v2CollectionName, knowledgeBaseId, documentId);
-        if (!legacyDeleted && !v2Deleted) {
+        boolean deleted = deleteQuietly(v3CollectionName, knowledgeBaseId, documentId);
+        if (!deleted) {
             throw new DomainException("向量删除失败");
         }
+    }
+
+    @Override
+    public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {
+        throw new UnsupportedOperationException("v1 不支持在线修改向量索引元数据，请通过重新摄入新版本完成时效变更");
     }
 
     private void insert(String collection, List<JsonObject> data) {
@@ -279,18 +291,19 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     }
 
     private List<ChunkReference> searchCollection(String collection, KnowledgeBaseId knowledgeBaseId,
-                                                  float[] queryEmbedding, int topK, boolean v2) {
+                                                  float[] queryEmbedding, int topK, RetrievalFilter filter) {
+        String filterExpr = buildSearchFilter(knowledgeBaseId, filter);
         SearchReq.SearchReqBuilder<?, ?> builder = SearchReq.builder()
                 .collectionName(collection)
                 .data(List.of(new FloatVec(queryEmbedding)))
-                .filter("knowledgeBaseId == '" + safeFilterValue(knowledgeBaseId.value()) + "'")
+                .filter(filterExpr)
                 .topK(topK)
                 .metricType(IndexParam.MetricType.COSINE)
                 .outputFields(List.of("documentId", "documentName", "chunkIndex",
-                        "chunkText", "startPosition", "endPosition"));
-        if (v2) {
-            builder.searchParams(Map.of("ef", hnswEf)).consistencyLevel(consistencyLevel);
-        }
+                        "chunkText", "startPosition", "endPosition",
+                        "canonicalKey", "versionLabel", "effectiveFromEpochDay", "effectiveToEpochDay",
+                        "lifecycleStatus", "authorityLevel", "jurisdiction"));
+        builder.searchParams(Map.of("ef", hnswEf)).consistencyLevel(consistencyLevel);
         SearchResp resp = client.search(builder.build());
         List<ChunkReference> results = new ArrayList<>();
         List<List<SearchResp.SearchResult>> batchResults = resp.getSearchResults();
@@ -299,21 +312,42 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         }
         for (SearchResp.SearchResult result : batchResults.get(0)) {
             Map<String, Object> entity = result.getEntity();
-            results.add(new ChunkReference(
-                    (String) entity.get("documentId"),
-                    (String) entity.get("documentName"),
-                    ((Number) entity.get("chunkIndex")).intValue(),
-                    (String) entity.get("chunkText"),
-                    normalizeScore(result.getScore()),
-                    ((Number) entity.get("startPosition")).intValue(),
-                    ((Number) entity.get("endPosition")).intValue()
-            ));
+            results.add(toChunkReference(entity, normalizeScore(result.getScore())));
         }
         return results;
     }
 
+    private String buildSearchFilter(KnowledgeBaseId knowledgeBaseId, RetrievalFilter filter) {
+        long asOfEpochDay = filter.asOfDate().toEpochDay();
+        StringBuilder sb = new StringBuilder();
+        sb.append("knowledgeBaseId == '").append(safeFilterValue(knowledgeBaseId.value())).append("'");
+        sb.append(" && effectiveFromEpochDay <= ").append(asOfEpochDay);
+        sb.append(" && (effectiveToEpochDay == ").append(Long.MAX_VALUE).append(" || effectiveToEpochDay > ").append(asOfEpochDay).append(")");
+        sb.append(" && lifecycleStatus in ['ACTIVE', 'SUPERSEDED']");
+        if (filter.sourceType() != null) {
+            sb.append(" && sourceType == '").append(safeFilterValue(filter.sourceType().name())).append("'");
+        }
+        if (filter.jurisdiction() != null && !filter.jurisdiction().isBlank()) {
+            sb.append(" && jurisdiction == '").append(safeFilterValue(filter.jurisdiction())).append("'");
+        }
+        return sb.toString();
+    }
+
     private List<JsonObject> toRows(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
-                                    List<DocumentChunk> chunks, List<float[]> embeddings) {
+                                    List<DocumentChunk> chunks, List<float[]> embeddings, DocumentMetadata metadata) {
+        long effectiveFromEpochDay = metadata.effectiveFrom() != null
+                ? metadata.effectiveFrom().toEpochDay()
+                : LocalDate.now().toEpochDay();
+        long effectiveToEpochDay = metadata.effectiveTo() != null
+                ? metadata.effectiveTo().toEpochDay()
+                : Long.MAX_VALUE;
+        String lifecycleStatus = DocumentLifecycleStatus.ACTIVE.name();
+        String canonicalKey = metadata.canonicalKey() != null ? metadata.canonicalKey() : "";
+        String versionLabel = metadata.versionLabel() != null ? metadata.versionLabel() : "";
+        int authorityLevel = metadata.authorityLevel() != null ? metadata.authorityLevel() : 0;
+        String jurisdiction = metadata.jurisdiction() != null ? metadata.jurisdiction() : "";
+        String sourceType = metadata.sourceType() != null ? metadata.sourceType().name() : "";
+
         List<JsonObject> data = new ArrayList<>();
         for (int i = 0; i < chunks.size(); i++) {
             DocumentChunk chunk = chunks.get(i);
@@ -326,6 +360,14 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
             row.addProperty("chunkText", chunk.text());
             row.addProperty("startPosition", chunk.startPosition());
             row.addProperty("endPosition", chunk.endPosition());
+            row.addProperty("effectiveFromEpochDay", effectiveFromEpochDay);
+            row.addProperty("effectiveToEpochDay", effectiveToEpochDay);
+            row.addProperty("lifecycleStatus", lifecycleStatus);
+            row.addProperty("canonicalKey", canonicalKey);
+            row.addProperty("versionLabel", versionLabel);
+            row.addProperty("authorityLevel", authorityLevel);
+            row.addProperty("jurisdiction", jurisdiction);
+            row.addProperty("sourceType", sourceType);
 
             JsonArray vec = new JsonArray();
             for (float f : embeddings.get(i)) {
@@ -337,9 +379,51 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
         return data;
     }
 
+    private ChunkReference toChunkReference(Map<String, Object> entity, float score) {
+        String lifecycleStatusStr = (String) entity.get("lifecycleStatus");
+        DocumentLifecycleStatus lifecycleStatus = lifecycleStatusStr != null && !lifecycleStatusStr.isBlank()
+                ? DocumentLifecycleStatus.valueOf(lifecycleStatusStr)
+                : DocumentLifecycleStatus.ACTIVE;
+
+        Long effectiveFromEpochDay = entity.get("effectiveFromEpochDay") instanceof Number
+                ? ((Number) entity.get("effectiveFromEpochDay")).longValue()
+                : null;
+        Long effectiveToEpochDay = entity.get("effectiveToEpochDay") instanceof Number
+                ? ((Number) entity.get("effectiveToEpochDay")).longValue()
+                : null;
+
+        LocalDate effectiveFrom = effectiveFromEpochDay != null && effectiveFromEpochDay != Long.MAX_VALUE
+                ? LocalDate.ofEpochDay(effectiveFromEpochDay)
+                : null;
+        LocalDate effectiveTo = effectiveToEpochDay != null && effectiveToEpochDay != Long.MAX_VALUE
+                ? LocalDate.ofEpochDay(effectiveToEpochDay)
+                : null;
+
+        Integer authorityLevel = entity.get("authorityLevel") instanceof Number
+                ? ((Number) entity.get("authorityLevel")).intValue()
+                : 0;
+
+        return new ChunkReference(
+                (String) entity.get("documentId"),
+                (String) entity.get("documentName"),
+                ((Number) entity.get("chunkIndex")).intValue(),
+                (String) entity.get("chunkText"),
+                score,
+                ((Number) entity.get("startPosition")).intValue(),
+                ((Number) entity.get("endPosition")).intValue(),
+                (String) entity.get("canonicalKey"),
+                (String) entity.get("versionLabel"),
+                effectiveFrom,
+                effectiveTo,
+                lifecycleStatus,
+                authorityLevel,
+                (String) entity.get("jurisdiction")
+        );
+    }
+
     private String safeFilterValue(String value) {
-        if (value == null || !value.matches("[A-Za-z0-9_-]+")) {
-            throw new DomainException("非法的向量过滤条件");
+        if (value == null || !value.matches("[A-Za-z0-9_\\-:]+")) {
+            throw new DomainException("非法的向量过滤条件: " + value);
         }
         return value;
     }
