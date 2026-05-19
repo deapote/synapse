@@ -1,6 +1,6 @@
 ---
 title: Domain 层
-description: Document 实体、状态机、IngestionJob、RecursiveChunkingStrategy
+description: Document 实体、状态机、时效元数据、IngestionJob、RecursiveChunkingStrategy
 ---
 
 # 文档上传与摄入 —— Domain 层
@@ -25,17 +25,22 @@ public class Document {
     private Instant processingStartAt;
     private Instant processingCompleteAt;
 
-    // 状态机规则表
-    private static final Map<DocumentStatus, Set<DocumentStatus>> VALID_TRANSITIONS = Map.of(
-        DocumentStatus.PENDING,     EnumSet.of(DocumentStatus.PROCESSING),
-        DocumentStatus.PROCESSING,  EnumSet.of(DocumentStatus.COMPLETED, DocumentStatus.FAILED),
-        DocumentStatus.FAILED,      EnumSet.of(DocumentStatus.PENDING),
-        DocumentStatus.COMPLETED,   EnumSet.noneOf(DocumentStatus.class)
-    );
+    // 时效元数据
+    private DocumentSourceType sourceType;
+    private String canonicalKey;
+    private String versionLabel;
+    private LocalDate effectiveFrom;
+    private LocalDate effectiveTo;
+    private DocumentLifecycleStatus lifecycleStatus;
+    private String supersedesDocumentId;
+    private int authorityLevel;
+    private String jurisdiction;
 }
 ```
 
-### 状态机规则
+### Document.status —— 摄入状态机
+
+`Document.status` 描述文档在摄入 pipeline 中的处理状态，与业务时效状态严格分离。
 
 | 当前状态 | 允许转换到 | 说明 |
 |---------|-----------|------|
@@ -45,61 +50,132 @@ public class Document {
 | FAILED | PENDING | 重试 |
 | COMPLETED | （无） | 终态 |
 
+```java
+private static final Map<DocumentStatus, Set<DocumentStatus>> VALID_TRANSITIONS = Map.of(
+    DocumentStatus.PENDING,     EnumSet.of(DocumentStatus.PROCESSING),
+    DocumentStatus.PROCESSING,  EnumSet.of(DocumentStatus.COMPLETED, DocumentStatus.FAILED),
+    DocumentStatus.FAILED,      EnumSet.of(DocumentStatus.PENDING),
+    DocumentStatus.COMPLETED,   EnumSet.noneOf(DocumentStatus.class)
+);
+```
+
+### DocumentLifecycleStatus —— 业务时效状态
+
+文件：`synapse-kb-domain/.../model/DocumentLifecycleStatus.java`
+
+```java
+public enum DocumentLifecycleStatus {
+    ACTIVE,      // 生效中
+    SUPERSEDED,  // 已被新版本替代
+    RETIRED      // 已废止
+}
+```
+
+`DocumentLifecycleStatus` 与 `DocumentStatus` 的关系：
+
+- `DocumentStatus` 管**摄入过程**（文件是否已解析、分块、索引）。
+- `DocumentLifecycleStatus` 管**业务时效**（这份资料在当前查询时间点是否有效）。
+- 一个 `COMPLETED` 的文档可以是 `ACTIVE`，也可以是 `SUPERSEDED` 或 `RETIRED`。
+- 一个 `FAILED` 的文档没有检索价值，其 `lifecycleStatus` 理论上不影响检索（因为 `FAILED` 不会写入索引）。
+
+### DocumentMetadata —— 时效元数据值对象
+
+文件：`synapse-kb-domain/.../model/DocumentMetadata.java`
+
+```java
+public record DocumentMetadata(
+    DocumentSourceType sourceType,      // LEGAL, POLICY, GENERAL
+    String canonicalKey,                // 规范标识，多版本关联键
+    String versionLabel,                // 版本标签，如 "2024 版"
+    LocalDate effectiveFrom,            // 生效日期
+    LocalDate effectiveTo,              // 排他结束日期
+    String supersedesDocumentId,        // 被替代的旧文档 ID
+    Integer authorityLevel,             // 权威等级，数值越高优先级越高
+    String jurisdiction                 // 适用区域/管辖范围
+) {}
+```
+
+所有字段均可空，由 domain 层提供默认值：
+- `sourceType` 默认 `GENERAL`
+- `effectiveFrom` 默认上传日期
+- `lifecycleStatus` 默认 `ACTIVE`
+- `authorityLevel` 默认 `0`
+
+### effectiveTo —— 排他结束日
+
+`effectiveTo` 的语义是**排他**的：
+
+| effectiveTo | 含义 |
+|-------------|------|
+| `null` | 永久有效 |
+| `2025-01-01` | 2025-01-01 **当天起无效** |
+
+这意味着如果旧法规的 `effectiveTo=2025-01-01`，查询 `asOfDate=2025-01-01` 时不会命中该法规。新法规的 `effectiveFrom=2025-01-01` 才会被命中。
+
+### isEffectiveOn() —— 时效校验
+
+```java
+public boolean isEffectiveOn(LocalDate date) {
+    if (date == null) return false;
+    if (lifecycleStatus == DocumentLifecycleStatus.RETIRED) return false;
+    if (effectiveFrom != null && date.isBefore(effectiveFrom)) return false;
+    if (effectiveTo != null && !date.isBefore(effectiveTo)) return false;
+    return true;
+}
+```
+
+### supersedeBy() —— 版本替代
+
+```java
+public void supersedeBy(Document newDocument, LocalDate effectiveTo) {
+    if (lifecycleStatus != DocumentLifecycleStatus.ACTIVE) {
+        throw new DomainException("仅 ACTIVE 文档可被替代");
+    }
+    if (effectiveTo == null) {
+        throw new DomainException("替代失效日期不能为空");
+    }
+    if (this.effectiveFrom != null && effectiveTo.isBefore(this.effectiveFrom)) {
+        throw new DomainException("替代失效日期不得早于文档生效日期");
+    }
+    this.effectiveTo = effectiveTo;
+    this.lifecycleStatus = DocumentLifecycleStatus.SUPERSEDED;
+}
+```
+
+**业务语义**：旧文档被新版本替代时，旧文档的 `effectiveTo` 被设为新版本的 `effectiveFrom`，`lifecycleStatus` 变为 `SUPERSEDED`。旧文档本身不删除，索引中的 scalar 字段保持不变（检索时由 application 层用 `isEffectiveOn()` 兜底过滤）。
+
 ### create() 工厂方法
 
 ```java
 public static Document create(KnowledgeBaseId knowledgeBaseId, String fileName,
-                               String fileType, long fileSize, String contentHash) {
+                               String fileType, long fileSize, String contentHash,
+                               DocumentMetadata metadata) {
     if (fileName == null || fileName.isBlank()) {
         throw new DomainException("文件名不能为空");
     }
-    return new Document(DocumentId.generate(), knowledgeBaseId, fileName,
-                        fileType, fileSize, contentHash, Instant.now());
+    Document doc = new Document(DocumentId.generate(), ...);
+    if (metadata != null) {
+        doc.applyMetadata(metadata);
+    }
+    return doc;
 }
 ```
 
-**强制 PENDING**：新创建的文档一定是 PENDING 状态，不存在其他可能。
+**强制 PENDING**：新创建的文档一定是 PENDING 状态，`lifecycleStatus` 默认 `ACTIVE`。
 
-### transitionTo() —— 状态转换
+## DocumentSourceType —— 资料来源类型
+
+文件：`synapse-kb-domain/.../model/DocumentSourceType.java`
 
 ```java
-public void transitionTo(DocumentStatus newStatus, String failureReason) {
-    Set<DocumentStatus> validNext = VALID_TRANSITIONS.get(this.status);
-    if (validNext == null || !validNext.contains(newStatus)) {
-        throw new DomainException("无效的状态转换 " + this.status + "->" + newStatus);
-    }
-    this.status = newStatus;
-
-    // 副作用：自动记录处理时间
-    if (newStatus == DocumentStatus.PROCESSING) {
-        this.processingStartAt = Instant.now();
-        this.processingCompleteAt = null;
-        this.failureReason = null;
-    }
-    if (newStatus == DocumentStatus.COMPLETED || newStatus == DocumentStatus.FAILED) {
-        this.processingCompleteAt = Instant.now();
-    }
-    if (newStatus == DocumentStatus.FAILED && failureReason != null) {
-        this.failureReason = failureReason;
-    }
+public enum DocumentSourceType {
+    LEGAL,   // 法律法规
+    POLICY,  // 政策/制度
+    GENERAL  // 一般资料
 }
 ```
 
-**三步走：查表 → 校验 → 执行 + 副作用。**
-
-### retry() —— 重试
-
-```java
-public void retry() {
-    transitionTo(DocumentStatus.PENDING);
-    this.processingStartAt = null;
-    this.processingCompleteAt = null;
-    this.failureReason = null;
-    this.chunkCount = 0;
-}
-```
-
-重试时清空所有处理痕迹，相当于"恢复出厂设置"。
+`sourceType` 和 `jurisdiction` 可作为检索时的扩展过滤字段（v1 中已保留在索引 schema 中，供后续扩展）。
 
 ## IngestionJob —— 摄入任务
 

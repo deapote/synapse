@@ -1,6 +1,6 @@
 ---
 title: 端口设计模式
-description: Driving Port、Driven Port 的命名规范与设计意图
+description: Driving Port、Driven Port 的命名规范与设计意图，含时效相关端口
 ---
 
 # 端口设计模式
@@ -42,9 +42,11 @@ description: Driving Port、Driven Port 的命名规范与设计意图
 - `ProcessIngestionJobUseCase`
 - `QueryKnowledgeBaseUseCase`
 - `GetCurrentChatSessionUseCase`、`CreateChatSessionUseCase`、`ListChatMessagesUseCase`
+- `UpdateDocumentMetadataUseCase` —— v1 返回不支持
+- `SupersedeDocumentUseCase` —— v1 返回不支持
 
 **出站端口（Driven）**：
-- `VectorStorePort` —— 向量存储（Milvus）
+- `VectorStorePort` —— 向量存储（Milvus v3）
 - `ChunkSearchIndexPort` —— 关键词索引（MongoDB）
 - `EmbeddingPort` —— 向量化（Ollama）
 - `DocumentParserPort` —— 文档解析（Tika）
@@ -54,6 +56,96 @@ description: Driving Port、Driven Port 的命名规范与设计意图
 - `ChatMemorySummarizerPort` —— 聊天摘要（Ollama）
 - `AccessControlPort` —— 权限检查（Sa-Token，跨上下文 ACL）
 
+## VectorStorePort 和 ChunkSearchIndexPort 签名
+
+文件：`synapse-kb-application/.../port/out/VectorStorePort.java`
+
+```java
+public interface VectorStorePort {
+    void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
+               List<DocumentChunk> chunks, List<float[]> embeddings, DocumentMetadata metadata);
+
+    List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, float[] queryEmbedding,
+                                 int topK, RetrievalFilter filter);
+
+    void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId);
+
+    void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId,
+                                 DocumentMetadata metadata);  // v1 抛出 UnsupportedOperationException
+}
+```
+
+文件：`synapse-kb-application/.../port/out/ChunkSearchIndexPort.java`
+
+```java
+public interface ChunkSearchIndexPort {
+    void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
+               List<DocumentChunk> chunks, DocumentMetadata metadata);
+
+    List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query,
+                                 int topK, RetrievalFilter filter);
+
+    void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId);
+
+    void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId,
+                                 DocumentMetadata metadata);  // v1 抛出 UnsupportedOperationException
+}
+```
+
+### RetrievalFilter
+
+文件：`synapse-kb-application/.../port/out/RetrievalFilter.java`
+
+```java
+public record RetrievalFilter(
+    LocalDate asOfDate,           // 必填硬过滤
+    DocumentSourceType sourceType, // 可选扩展过滤
+    String jurisdiction            // 可选扩展过滤
+) {
+    public RetrievalFilter {
+        if (asOfDate == null) {
+            throw new IllegalArgumentException("asOfDate 不能为空");
+        }
+    }
+}
+```
+
+`RetrievalFilter` 是检索时的过滤条件：
+- `asOfDate` 为**必填**硬过滤，Milvus 和 Mongo 检索都必须执行
+- `sourceType` 和 `jurisdiction` 为可选软过滤，v1 中索引已支持，可在后续版本开放给用户
+
+### UpdateDocumentMetadataUseCase / SupersedeDocumentUseCase
+
+文件：`synapse-kb-application/.../port/in/UpdateDocumentMetadataUseCase.java`
+
+```java
+public interface UpdateDocumentMetadataUseCase {
+    Document updateMetadata(DocumentId id, DocumentMetadata metadata);
+}
+```
+
+文件：`synapse-kb-application/.../port/in/SupersedeDocumentUseCase.java`
+
+```java
+public interface SupersedeDocumentUseCase {
+    void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo);
+}
+```
+
+v1 中 `KnowledgeBaseApplicationService` 对这两个接口的实现均返回 `DomainException` 说明不支持：
+
+```java
+@Override
+public Document updateMetadata(DocumentId id, DocumentMetadata metadata) {
+    throw new DomainException("v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更");
+}
+
+@Override
+public void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo) {
+    throw new DomainException("v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更");
+}
+```
+
 ## 接口隔离的设计原因
 
 ### 1. 测试时可 Mock
@@ -61,7 +153,6 @@ description: Driving Port、Driven Port 的命名规范与设计意图
 ```java
 @Test
 void shouldRejectDuplicateContent() {
-    // 不需要真的连 MongoDB，mock Repository 即可
     DocumentRepository mockRepo = mock(DocumentRepository.class);
     when(mockRepo.findByKnowledgeBaseIdAndContentHash(any(), any()))
         .thenReturn(List.of(existingDoc));
@@ -134,6 +225,8 @@ public class KnowledgeBaseApplicationService implements
         DeleteKnowledgeBaseUseCase,
         IngestDocumentUseCase,
         QueryKnowledgeBaseUseCase,
+        UpdateDocumentMetadataUseCase,      // v1 返回不支持
+        SupersedeDocumentUseCase,           // v1 返回不支持
         ... {
     // 一个类实现所有 KB 相关的入站端口
 }

@@ -55,8 +55,6 @@ kb-application ──AccessControlPort──> auth-adapter (SaTokenAccessControl
 
 ## 一条请求的完整旅程
 
-让我们跟着一次**登录请求**，看看数据如何从浏览器流动到数据库，再返回到浏览器。
-
 ### 登录请求
 
 ```mermaid
@@ -106,36 +104,88 @@ sequenceDiagram
     participant KeywordSearch
     participant LLM
 
-    Browser->>StreamingQueryController: POST /query/stream<br/>{query, sessionId}
+    Browser->>StreamingQueryController: POST /query/stream<br/>{query, sessionId, asOfDate}
     StreamingQueryController->>QueryUseCase: prepare(query)
     QueryUseCase->>SessionRepo: getOrCreateSession()
+    QueryUseCase->>QueryUseCase: resolveAsOfDate()
     QueryUseCase->>QueryRewrite: rewrite(query)
     QueryRewrite->>QueryUseCase: rewrittenQuery (or original)
     
     par 并行执行
-        QueryUseCase->>VectorSearch: search(embedding)
-        VectorSearch->>Milvus: ANN search
-        Milvus-->>VectorSearch: Top-K chunks
+        QueryUseCase->>VectorSearch: search(embedding, RetrievalFilter)
+        VectorSearch->>Milvus: ANN search + scalar filter<br/>(effectiveFrom, effectiveTo, lifecycleStatus)
+        Milvus-->>VectorSearch: Top-K chunks (with temporal fields)
     and
-        QueryUseCase->>KeywordSearch: search(keywords)
-        KeywordSearch->>MongoDB: BM25 search
-        MongoDB-->>KeywordSearch: Top-K chunks
+        QueryUseCase->>KeywordSearch: search(keywords, RetrievalFilter)
+        KeywordSearch->>MongoDB: BM25 search + Criteria filter<br/>(effectiveFrom, effectiveTo, lifecycleStatus)
+        MongoDB-->>KeywordSearch: Top-K chunks (with temporal fields)
     end
     
     QueryUseCase->>QueryUseCase: mergeAndRerank()
-    QueryUseCase->>QueryUseCase: buildPrompt()
+    QueryUseCase->>QueryUseCase: filterByDocumentEffectiveDate()
+    QueryUseCase->>QueryUseCase: deduplicateByCanonicalKey()
+    QueryUseCase->>QueryUseCase: buildPrompt(with versionLabel, effectiveFrom, effectiveTo, lifecycleStatus)
     QueryUseCase-->>StreamingQueryController: RagContext
     StreamingQueryController->>LLM: generateStream(prompt)
-    LLM-->>StreamingQueryController: Stream&lt;token&gt;
-    StreamingQueryController-->>Browser: SSE events
+    LLM-->>StreamingQueryController: Stream<token>
+    StreamingQueryController-->>Browser: SSE events (token, references, validation)
 ```
 
 这个链路展示了本项目的几个关键技术点：
 
-1. **Query 改写**：先尝试优化用户问题，再用 embedding 相似度校验质量
-2. **混合检索并行**：向量检索和关键词检索用 `CompletableFuture` 同时执行
-3. **融合重排**：两种检索结果加权排序，得到最终 Top-K
-4. **SSE 流式**：LLM 生成一个字，前端立刻显示一个字
+1. **asOfDate 解析**：未传时默认当前日期，附带轻量时间意图解析
+2. **Query 改写**：先尝试优化用户问题，再用 embedding 相似度校验质量
+3. **混合检索并行**：向量检索和关键词检索用 `CompletableFuture` 同时执行
+4. **资料时效硬过滤**：Milvus scalar filter 和 Mongo BM25 Criteria 都按 `effectiveFromEpochDay + effectiveToEpochDay + lifecycleStatus` 过滤
+5. **Application 兜底过滤**：`mergeAndRerank` 后用 Mongo `Document` 真实状态二次校验
+6. **同 canonicalKey 多版本去重**：`authorityLevel` 高者优先，同等级 `effectiveFrom` 更新者优先
+7. **融合重排**：两种检索结果加权排序，得到最终 Top-K
+8. **SSE 流式**：LLM 生成一个字，前端立刻显示一个字
+
+## 资料时效性治理在架构中的位置
+
+资料时效性治理横跨 ingestion 和 query 两个流程：
+
+### Ingestion 流程
+
+```
+上传接口 (DocumentController)
+    ↓
+IngestDocumentUseCase.ingest()
+    ↓
+Document.create(..., DocumentMetadata)  // domain 层校验和默认值
+    ↓
+存储原始内容 (GridFS)
+    ↓
+创建 IngestionJob
+    ↓
+Worker 异步处理
+    ↓
+processDocument()
+    ├── parseDocumentChunks() → Tika 解析
+    ├── embeddingPort.embed() → Ollama 向量化
+    ├── vectorStorePort.store(kbId, docId, ..., metadata) → Milvus v3
+    ├── chunkSearchIndexPort.store(kbId, docId, ..., metadata) → Mongo BM25
+    └── 新文档 COMPLETED 后 → supersedeOldDocument() → 旧文档标记 SUPERSEDED
+```
+
+### Query 流程
+
+```
+POST /query/stream
+    ↓
+QueryUseCase.prepare(Query)
+    ├── resolveChatSession()
+    ├── prepareQuery() → Query 改写 + 质量门禁
+    ├── resolveAsOfDate() → 解析 asOfDate（默认今天）
+    ├── retrieveReferences()
+    │   ├── vectorStorePort.search(..., RetrievalFilter) → Milvus v3 scalar 硬过滤
+    │   ├── chunkSearchIndexPort.search(..., RetrievalFilter) → Mongo BM25 Criteria 硬过滤
+    │   ├── mergeAndRerank() → 加权融合
+    │   ├── filterByDocumentEffectiveDate() → Mongo Document 真实状态兜底
+    │   └── deduplicateByCanonicalKey() → 同 canonicalKey 去重
+    └── buildPrompt() → 含 versionLabel, effectiveFrom, effectiveTo, lifecycleStatus
+```
 
 ## Application 层同步的设计原因
 
@@ -190,4 +240,3 @@ graph LR
 4. Adapter 层的 `@Component` 被 Spring 扫描注册
 5. `AuthDataInitializer` 在启动时初始化默认角色和 admin 用户
 6. `IngestionJobWorker` 开始定时轮询后台任务
-

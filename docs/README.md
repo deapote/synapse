@@ -1,40 +1,67 @@
-# Synapse 文档
+# Synapse 文档中心
 
-这是 Synapse 知识库 RAG 系统的教育型文档站点，基于 [Mintlify](https://mintlify.com) 构建。
+## 定位
 
-文档面向"会用 Spring Boot 写 CRUD 的 Java 学习者"，通过纵向切片的学习路径，从 HTTP 请求到数据库逐层拆解每个功能。
+本文档站是 Synapse 知识库 RAG 系统的工程文档，覆盖架构、领域模型、文档摄入、问答检索、聊天记忆、认证授权、部署、安全、API 与配置参考。文档面向后端开发、前端开发、架构评审、运维部署和后续维护者。
+
+文档基于 Mintlify 构建，代码与文档同源管理。
+
+## 快速入口
+
+| 角色/场景 | 推荐入口 |
+|:---|:---|
+| 后端开发 | `overview/architecture-overview`、`design/ports`、`ingestion/application`、`query/application` |
+| 前端开发 | `reference/api/*`、`chat/adapter-in`、`query/adapter-in` |
+| 运维部署 | `deployment/local`、`deployment/production-notes`、`reference/configuration` |
+| 安全审查 | `security/auth`、`security/rag`、`security/cors` |
+| RAG 检索调优 | `design/hybrid-retrieval`、`query/application`、`query/adapter-out` |
+| 资料时效性治理 | `ingestion/domain`、`ingestion/application`、`query/application`、`design/hybrid-retrieval`、`reference/api/document`、`reference/api/streaming-query` |
+
+## 文档目录
+
+- **overview**：系统定位、技术栈、架构鸟瞰、运行前置条件
+- **getting-started**：本地启动与首次使用
+- **concepts**：RAG、向量检索、DDD、分层架构、状态机等基础概念
+- **auth**：认证授权 bounded context 的领域、应用、适配器和配置
+- **ingestion**：文档上传、解析、分块、索引写入、摄入任务、资料时效元数据
+- **query**：Query 改写、`asOfDate`、混合检索、时效过滤、Prompt 组装、SSE 输出
+- **chat**：聊天会话、消息持久化、引用保存、摘要记忆
+- **design**：端口设计、混合检索、分块算法、Reactive 桥接、前端架构等横向专题
+- **deployment**：本地和生产部署注意事项
+- **reference**：API、配置、目录、错误码、术语
+- **security**：认证、RAG Prompt 安全、CORS
+
+## 当前关键设计边界
+
+- Domain/Application 保持同步 API，WebFlux 只在 adapter-in 边界。
+- `auth` 与 `kb` 是并列 bounded context，`kb` 通过 `AccessControlPort` 依赖权限能力。
+- 文档摄入状态 `Document.status`（`PENDING → PROCESSING → COMPLETED/FAILED`）与业务时效状态 `DocumentLifecycleStatus`（`ACTIVE`、`SUPERSEDED`、`RETIRED`）严格分离。
+- 资料时效性治理采用 Milvus/Mongo 检索硬过滤 + application 真实文档状态兜底过滤的双层策略。
+- v1 不支持在线修改已完成文档的检索 metadata；`PUT /api/documents/{id}/metadata` 返回不支持。
+- v1 不支持手动在线 supersede；`POST /api/documents/{id}/supersede` 返回不支持。
+- 新版本替代旧版本必须通过重新上传并指定 `supersedesDocumentId`。
+- `effectiveTo` 是排他结束日：`effectiveTo=2025-01-01` 表示 2025-01-01 当天起旧资料无效。
+- 旧 collection / 存量数据需要重新摄入或迁移到 v3，否则不能保证完整时效过滤。
+
+## 文档维护规范
+
+- 文档必须以当前代码为准，不能保留旧方法签名或旧路径。
+- API 文档变更必须同步 request/response 示例。
+- 端口签名变更必须同步 `design/ports`、`ingestion/query` 对应 `application`/`adapter-out` 文档。
+- 配置变更必须同步 `reference/configuration` 和 `README.md`。
+- 涉及安全、权限、资料时效性的行为变更，必须同步 `AGENTS.md` 和 `CLAUDE.md`。
+- 文档中的代码片段应简化但必须可对应当前真实类名、方法名和字段名。
 
 ## 本地预览
 
 ```bash
-# 安装 Mintlify CLI
 npm i -g mint
-
-# 进入文档目录
 cd docs
-
-# 启动开发服务器
 mint dev
 ```
 
 访问 `http://localhost:3000` 查看文档。
 
-## 部署
+## 发布
 
-文档通过 Mintlify 自动部署：
-
-1. 推送代码到 GitHub 主分支
-2. Mintlify 自动构建并部署
-3. 访问 `https://synapse.mintlify.app`
-
-## 文档结构
-
-- `00-overview/` — 项目概览、技术栈、架构鸟瞰
-- `01-getting-started/` — 快速上手、首次使用指南
-- `02-core-concepts/` — 核心概念铺垫（RAG、向量检索、DDD、分层架构、状态机）
-- `03-vertical-slices/` — 纵向切片（认证 → 文档摄入 → 问答检索 → 聊天记忆）
-- `04-horizontal-deepdive/` — 横向深入（设计模式、端口设计、Reactive 桥接、混合检索、分块算法、前端架构）
-- `05-practice/` — 动手实践（调试、添加字段、更换模型、问题排查）
-- `06-deployment/` — 部署文档
-- `07-reference/` — API 参考、配置参考、目录速查、术语表
-- `08-security/` — 安全设计
+本文档由 Mintlify 构建，发布流程依赖仓库配置。推送代码后 Mintlify 自动构建并部署。

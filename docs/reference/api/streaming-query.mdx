@@ -1,6 +1,6 @@
 ---
 title: 流式问答 API
-description: SSE 事件协议详解
+description: SSE 事件协议详解，含 asOfDate 和时效字段
 ---
 
 # API 参考 —— 流式问答
@@ -12,10 +12,14 @@ description: SSE 事件协议详解
 ### 请求
 
 ```bash
-curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/query/stream \
+curl -N -X POST http://localhost:8082/api/knowledge-bases/kb-uuid/query/stream \
   -H "Content-Type: application/json" \
-  -H "satoken: xxx" \
-  -d '{"query": "如何安装产品？", "sessionId": "session-uuid"}'
+  -H "synapse-token: xxx" \
+  -d '{
+    "query": "2024年规定是什么？",
+    "sessionId": "session-uuid",
+    "asOfDate": "2024-06-01"
+  }'
 ```
 
 **请求体**：
@@ -24,6 +28,41 @@ curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/query/stream \
 |------|------|------|------|
 | query | string | 是 | 用户问题 |
 | sessionId | string | 否 | 会话 ID，用于多轮对话。不传则自动创建新会话 |
+| asOfDate | string | 否 | 查询日期，格式 `YYYY-MM-DD`。未传时默认当前日期 |
+
+### asOfDate 查询示例
+
+**查询 2024 年 6 月的适用法规**：
+
+```bash
+curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "query": "这项法规的主要内容是什么？",
+    "asOfDate": "2024-06-01"
+  }'
+```
+
+**查询当前适用的法规（不传 asOfDate）**：
+
+```bash
+curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{"query": "现行规定是什么？"}'
+```
+
+**利用时间意图解析（自动识别）**：
+
+```bash
+curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{"query": "2024年新规有什么变化？"}'
+```
+
+系统会自动从问题文本中解析出 `2024-12-31` 作为 `asOfDate`。
 
 ### 响应
 
@@ -47,10 +86,10 @@ event: token
 data: {"token": "根据"}
 
 event: token
-data: {"token": "产品"}
+data: {"token": "2024年"}
 
 event: token
-data: {"token": "手册"}
+data: {"token": "法规"}
 ```
 
 说明：每个 token 事件包含一个文本片段，前端按顺序拼接即为完整回答。
@@ -59,10 +98,28 @@ data: {"token": "手册"}
 
 ```
 event: references
-data: {"references": [{"sourceId": 1, "documentId": "doc-uuid", "documentName": "安装指南.pdf", "chunkText": "第一步：下载安装包...", "score": 0.9234, "startPosition": 0, "endPosition": 200, "used": true}]}
+data: {"references": [{"sourceId": 1, "documentId": "doc-uuid", "documentName": "法规A-2024版.pdf", "chunkText": "第一条...", "score": 0.9234, "startPosition": 0, "endPosition": 200, "used": true, "canonicalKey": "regulation-a", "versionLabel": "2024 版", "effectiveFrom": "2024-01-01", "effectiveTo": null, "lifecycleStatus": "ACTIVE", "authorityLevel": 10, "jurisdiction": "全国"}]}
 ```
 
-说明：返回检索到的引用来源列表。
+说明：返回检索到的引用来源列表。每个引用包含完整的时效元数据：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| sourceId | int | 来源编号，对应回答中的 [1]、[2] |
+| documentId | string | 文档 ID |
+| documentName | string | 文档名称 |
+| chunkText | string | 片段文本 |
+| score | float | 相似度分数 |
+| startPosition | int | 起始位置 |
+| endPosition | int | 结束位置 |
+| used | boolean | 回答中是否引用了该来源 |
+| canonicalKey | string | 规范标识 |
+| versionLabel | string | 版本标签 |
+| effectiveFrom | string | 生效日期 |
+| effectiveTo | string | 排他结束日期 |
+| lifecycleStatus | string | `ACTIVE`/`SUPERSEDED`/`RETIRED` |
+| authorityLevel | int | 权威等级 |
+| jurisdiction | string | 适用区域 |
 
 #### 4. validation 事件
 
@@ -94,64 +151,6 @@ data: {"message": "流式问答失败", "traceId": "trace-uuid"}
 ```
 
 说明：处理过程中发生错误。
-
-### 完整 SSE 示例
-
-```
-event: session
-data: {"sessionId": "550e8400-e29b-41d4-a716-446655440000"}
-
-event: token
-data: {"token": "根据"}
-
-event: token
-data: {"token": "产品"}
-
-event: token
-data: {"token": "手册"}
-
-event: token
-data: {"token": "，"}
-
-event: token
-data: {"token": "安装"}
-
-event: token
-data: {"token": "步骤"}
-
-event: token
-data: {"token": "如下"}
-
-event: token
-data: {"token": "："}
-
-event: token
-data: {"token": "\\n"}
-
-event: token
-data: {"token": "1."}
-
-event: token
-data: {"token": " "}
-
-event: token
-data: {"token": "下载"}
-
-event: token
-data: {"token": "安装"}
-
-event: token
-data: {"token": "包"}
-
-event: references
-data: {"references": [{"sourceId": 1, "documentId": "doc-uuid", "documentName": "安装指南.pdf", "chunkText": "第一步：下载安装包...", "score": 0.9234, "startPosition": 0, "endPosition": 200, "used": true}]}
-
-event: validation
-data: {"trusted": true, "usedSourceIds": [1], "warnings": []}
-
-event: complete
-data: {"sessionId": "550e8400-e29b-41d4-a716-446655440000"}
-```
 
 ### 权限
 

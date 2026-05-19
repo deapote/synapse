@@ -1,6 +1,6 @@
 ---
 title: 文档 API
-description: 上传、列表、删除、重试文档摄入
+description: 上传、列表、删除、重试文档摄入，含 metadata 参数和时效字段
 ---
 
 # API 参考 —— 文档
@@ -12,10 +12,14 @@ description: 上传、列表、删除、重试文档摄入
 ### 请求
 
 ```bash
-curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/documents \
+curl -X POST http://localhost:8082/api/knowledge-bases/kb-uuid/documents \
   -H "Content-Type: multipart/form-data" \
-  -H "satoken: xxx" \
-  -F "file=@/path/to/document.pdf"
+  -H "synapse-token: xxx" \
+  -F "file=@/path/to/document.pdf" \
+  -F "canonicalKey=regulation-a" \
+  -F "versionLabel=2024 版" \
+  -F "effectiveFrom=2024-01-01" \
+  -F "sourceType=LEGAL"
 ```
 
 **路径参数**：
@@ -24,7 +28,19 @@ curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/documents \
 |------|------|------|
 | kbId | string | 知识库 ID |
 
-**请求体**：`multipart/form-data`，字段名 `file`。
+**请求体**：`multipart/form-data`。
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| file | File | 是 | 文档文件 |
+| sourceType | string | 否 | `LEGAL`、`POLICY`、`GENERAL` |
+| canonicalKey | string | 否 | 规范标识，用于同一资料的多版本关联 |
+| versionLabel | string | 否 | 版本标签，如 "2024 版" |
+| effectiveFrom | string | 否 | 生效日期，格式 `YYYY-MM-DD` |
+| effectiveTo | string | 否 | 排他结束日期，格式 `YYYY-MM-DD` |
+| supersedesDocumentId | string | 否 | 被替代的旧文档 ID |
+| authorityLevel | int | 否 | 权威等级，数值越高优先级越高 |
+| jurisdiction | string | 否 | 适用区域/管辖范围 |
 
 ### 响应
 
@@ -39,9 +55,40 @@ curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/documents \
   "fileSize": 102400,
   "status": "PENDING",
   "chunkCount": 0,
-  "uploadedAt": "2024-01-15T08:30:00Z"
+  "uploadedAt": "2024-01-15T08:30:00Z",
+  "sourceType": "LEGAL",
+  "canonicalKey": "regulation-a",
+  "versionLabel": "2024 版",
+  "effectiveFrom": "2024-01-01",
+  "effectiveTo": null,
+  "lifecycleStatus": "ACTIVE",
+  "supersedesDocumentId": null,
+  "authorityLevel": 10,
+  "jurisdiction": "全国"
 }
 ```
+
+**响应字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | string | 文档 ID |
+| knowledgeBaseId | string | 所属知识库 ID |
+| fileName | string | 文件名 |
+| fileType | string | MIME 类型 |
+| fileSize | long | 文件大小（字节） |
+| status | string | `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED` |
+| chunkCount | int | 分块数量 |
+| uploadedAt | string | 上传时间（ISO 8601） |
+| sourceType | string | `LEGAL`/`POLICY`/`GENERAL` |
+| canonicalKey | string | 规范标识 |
+| versionLabel | string | 版本标签 |
+| effectiveFrom | string | 生效日期 |
+| effectiveTo | string | 排他结束日期 |
+| lifecycleStatus | string | `ACTIVE`/`SUPERSEDED`/`RETIRED` |
+| supersedesDocumentId | string | 被替代的旧文档 ID |
+| authorityLevel | int | 权威等级 |
+| jurisdiction | string | 适用区域 |
 
 ### 权限
 
@@ -52,6 +99,7 @@ curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/documents \
 - 上传后文档状态为 `PENDING`，后台自动处理
 - 相同内容的文档在同一个知识库中不能重复上传（基于 SHA-256）
 - 支持的文件类型：pdf, doc, docx, txt, md
+- 传入 `supersedesDocumentId` 时，新文档摄入成功后旧文档自动标记 `SUPERSEDED`
 
 ---
 
@@ -62,13 +110,13 @@ curl -X POST http://localhost:8080/api/knowledge-bases/kb-uuid/documents \
 ### 请求
 
 ```bash
-curl "http://localhost:8080/api/knowledge-bases/kb-uuid/documents?page=0&size=20" \
-  -H "satoken: xxx"
+curl "http://localhost:8082/api/knowledge-bases/kb-uuid/documents?page=0&size=20" \
+  -H "synapse-token: xxx"
 ```
 
 ### 响应
 
-**成功 (200)**：文档列表数组。
+**成功 (200)**：文档列表数组，每个元素与上传响应格式相同。
 
 ### 权限
 
@@ -83,8 +131,8 @@ curl "http://localhost:8080/api/knowledge-bases/kb-uuid/documents?page=0&size=20
 ### 请求
 
 ```bash
-curl -X DELETE http://localhost:8080/api/documents/doc-uuid \
-  -H "satoken: xxx"
+curl -X DELETE http://localhost:8082/api/documents/doc-uuid \
+  -H "synapse-token: xxx"
 ```
 
 ### 响应
@@ -104,8 +152,8 @@ curl -X DELETE http://localhost:8080/api/documents/doc-uuid \
 ### 请求
 
 ```bash
-curl -X POST http://localhost:8080/api/documents/doc-uuid/retry \
-  -H "satoken: xxx"
+curl -X POST http://localhost:8082/api/documents/doc-uuid/retry \
+  -H "synapse-token: xxx"
 ```
 
 ### 响应
@@ -120,3 +168,31 @@ curl -X POST http://localhost:8080/api/documents/doc-uuid/retry \
 
 - 只有 `FAILED` 状态的文档可以重试
 - 重试会清理旧索引并重新处理
+
+---
+
+## PUT /api/documents/{id}/metadata
+
+**v1 不支持**。返回 `DomainException`：
+
+```json
+{
+  "message": "v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更"
+}
+```
+
+正确的资料时效变更必须通过重新上传新版本完成。
+
+---
+
+## POST /api/documents/{id}/supersede
+
+**v1 不支持**。返回 `DomainException`：
+
+```json
+{
+  "message": "v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更"
+}
+```
+
+正确的版本替代必须通过重新上传新版本并指定 `supersedesDocumentId` 完成。

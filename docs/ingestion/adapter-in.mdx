@@ -1,6 +1,6 @@
 ---
 title: Adapter-In 层
-description: DocumentController、IngestionJobWorker、文件上传处理
+description: DocumentController、IngestionJobWorker、文件上传处理、metadata 参数
 ---
 
 # 文档上传与摄入 —— Adapter-In 层
@@ -13,73 +13,108 @@ description: DocumentController、IngestionJobWorker、文件上传处理
 @RestController
 public class DocumentController {
     private final IngestDocumentUseCase ingestUseCase;
-    private final long maxFileBytes;
-    private final List<String> allowedExtensions;
+    private final UpdateDocumentMetadataUseCase updateMetadataUseCase;
+    private final SupersedeDocumentUseCase supersedeUseCase;
+    // ... 其他 use case
 
     @PostMapping(value = "/api/knowledge-bases/{kbId}/documents",
                  consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Mono<DocumentResponse> upload(
             @PathVariable String kbId,
-            @RequestPart("file") FilePart filePart) {
+            @RequestPart("file") FilePart filePart,
+            @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String canonicalKey,
+            @RequestParam(required = false) String versionLabel,
+            @RequestParam(required = false) String effectiveFrom,
+            @RequestParam(required = false) String effectiveTo,
+            @RequestParam(required = false) String supersedesDocumentId,
+            @RequestParam(required = false) Integer authorityLevel,
+            @RequestParam(required = false) String jurisdiction) {
 
-        return DataBufferUtils.join(filePart.content())
+        return DataBufferUtils.join(filePart.content(), maxJoinBytes())
             .map(dataBuffer -> {
                 byte[] bytes = new byte[dataBuffer.readableByteCount()];
                 dataBuffer.read(bytes);
                 DataBufferUtils.release(dataBuffer);
                 return bytes;
             })
+            .onErrorMap(DataBufferLimitException.class,
+                e -> new DomainException("文件大小超过限制", e))
             .flatMap(bytes -> SaTokenReactorBridge.blockingCall(() -> {
                 // 文件校验
-                if (bytes.length > maxFileBytes) {
+                if (bytes.length <= 0 || bytes.length > maxFileBytes) {
                     throw new DomainException("文件大小超过限制");
                 }
                 String fileName = safeFileName(filePart.filename());
-                validateFile(fileName);
-
-                // 计算 contentHash
+                String contentType = filePart.headers().getContentType() != null
+                    ? filePart.headers().getContentType().toString()
+                    : "application/octet-stream";
+                validateFile(fileName, contentType);
                 String contentHash = bytesToHex(
                     MessageDigest.getInstance("SHA-256").digest(bytes)
+                );
+
+                // 解析 metadata
+                DocumentMetadata metadata = parseMetadata(
+                    sourceType, canonicalKey, versionLabel,
+                    effectiveFrom, effectiveTo,
+                    supersedesDocumentId, authorityLevel, jurisdiction
                 );
 
                 // 构建命令并执行
                 IngestDocumentCommand command = new IngestDocumentCommand(
                     new KnowledgeBaseId(kbId), fileName,
                     contentType, bytes.length, contentHash,
-                    new ByteArrayInputStream(bytes)
+                    new ByteArrayInputStream(bytes), metadata
                 );
 
                 DocumentId documentId = ingestUseCase.ingest(command);
-                return new DocumentResponse(documentId.value(), kbId, fileName,
-                    contentType, bytes.length, "PENDING", 0, null);
+                return toResponse(documentId, kbId, fileName, contentType, bytes.length);
             }));
     }
 }
 ```
 
-### 关键点
+### Metadata 参数说明
 
-**`FilePart`**：WebFlux 的 multipart 文件表示。`filePart.content()` 返回 `Flux<DataBuffer>`，需要 `join()` 合并成完整的字节数组。
+上传接口支持以下 `@RequestParam` 参数：
 
-**`DataBufferUtils.join()`**：把流式的数据缓冲合并成一个。注意用完后要 `release()`，防止内存泄漏。
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `sourceType` | string | 否 | `LEGAL`、`POLICY`、`GENERAL` |
+| `canonicalKey` | string | 否 | 规范标识，用于同一资料的多版本关联 |
+| `versionLabel` | string | 否 | 版本标签，如 "2024 版" |
+| `effectiveFrom` | string | 否 | 生效日期，格式 `YYYY-MM-DD` |
+| `effectiveTo` | string | 否 | 排他结束日期，格式 `YYYY-MM-DD` |
+| `supersedesDocumentId` | string | 否 | 被替代的旧文档 ID |
+| `authorityLevel` | int | 否 | 权威等级，数值越高优先级越高 |
+| `jurisdiction` | string | 否 | 适用区域/管辖范围 |
 
-**`MessageDigest.getInstance("SHA-256")`**：计算文件的 SHA-256 哈希，用于重复内容检测。
-
-### 文件校验
+### v1 不支持的接口
 
 ```java
-private void validateFile(String fileName) {
-    String ext = getExtension(fileName).toLowerCase();
-    if (!allowedExtensions.contains(ext)) {
-        throw new DomainException("不支持的文件格式: " + ext);
-    }
+@PutMapping("/api/documents/{id}/metadata")
+public Mono<DocumentResponse> updateMetadata(...) {
+    // 调用 UpdateDocumentMetadataUseCase.updateMetadata()
+    // v1 返回 DomainException：不支持在线修改
+}
+
+@PostMapping("/api/documents/{id}/supersede")
+public Mono<Void> supersede(...) {
+    // 调用 SupersedeDocumentUseCase.supersede()
+    // v1 返回 DomainException：不支持在线替代
 }
 ```
 
+这两个接口在 v1 中保留但返回不支持。正确的资料时效变更必须通过重新上传新版本并指定 `supersedesDocumentId` 完成。
+
+### 文件校验
+
 校验项：
-- 文件大小（默认 10MB）
+- 文件大小（默认 20MB）
 - 文件扩展名（pdf, doc, docx, txt, md）
 - Content-Type
+- SHA-256 内容去重
 
 ## IngestionJobWorker
 

@@ -1,6 +1,6 @@
 ---
 title: Domain 层
-description: Query、RagContext、ChunkReference 值对象
+description: Query、RagContext、ChunkReference 值对象与 asOfDate
 ---
 
 # 问答检索 —— Domain 层
@@ -10,16 +10,43 @@ description: Query、RagContext、ChunkReference 值对象
 文件：`synapse-kb-domain/.../model/Query.java`
 
 ```java
-public record Query(String text) {
+public record Query(
+    KnowledgeBaseId knowledgeBaseId,
+    String text,
+    String sessionId,
+    LocalDate asOfDate
+) {
     public Query {
-        if (text == null || text.isBlank()) {
-            throw new DomainException("查询内容不能为空");
+        if (knowledgeBaseId == null) {
+            throw new DomainException("知识库编号不能为空");
         }
+        if (text == null || text.isBlank()) {
+            throw new DomainException("查询文本不能为空");
+        }
+        sessionId = sessionId == null || sessionId.isBlank() ? null : sessionId.strip();
+    }
+
+    public Query(KnowledgeBaseId knowledgeBaseId, String text) {
+        this(knowledgeBaseId, text, null, null);
+    }
+
+    public Query(KnowledgeBaseId knowledgeBaseId, String text, String sessionId) {
+        this(knowledgeBaseId, text, sessionId, null);
     }
 }
 ```
 
-`Query` 是一个简单的值对象，封装用户输入的问题文本。
+### asOfDate
+
+`asOfDate` 指定查询的"时间点"，检索时只返回在该时间点有效的资料。
+
+- 显式传入：直接使用指定日期
+- 未传入：`prepare()` 中通过 `resolveAsOfDate()` 解析，默认当前日期，并附带轻量时间意图解析
+
+**使用场景**：
+- 法规查询："2024 年的规定是什么？"
+- 政策追溯："2023 年 6 月的政策版本？"
+- 当前适用：不传 `asOfDate`，默认使用今天
 
 ## RagContext —— RAG 上下文
 
@@ -30,14 +57,14 @@ public record RagContext(
     String prompt,                    // 组装好的完整 prompt
     List<ChunkReference> references,  // 引用来源列表
     String sessionId,                 // 会话 ID
-    String knowledgeBaseId            // 知识库 ID
+    String ownerUserId                // 用户 ID
 ) {}
 ```
 
 `RagContext` 是 Application 层 `prepare()` 方法的返回值，包含：
 - 给 LLM 的完整 prompt
-- 检索到的引用来源（用于前端展示）
-- 会话和知识库标识
+- 检索到的引用来源（用于前端展示和引用校验）
+- 会话和用户标识
 
 ## ChunkReference —— 引用来源
 
@@ -45,17 +72,40 @@ public record RagContext(
 
 ```java
 public record ChunkReference(
-    int sourceId,        // 引用编号 [1], [2]
-    String documentId,   // 文档 ID
-    String documentName, // 文档名称
-    String text,         // 片段文本
-    float score          // 相似度分数
+    String documentId,           // 来源文档 ID
+    String documentName,         // 文档名称
+    int chunkIndex,              // 分块序号
+    String chunkText,            // 片段文本
+    float score,                 // 相似度分数 [0, 1]
+    int startPosition,           // 起始位置
+    int endPosition,             // 结束位置
+    String canonicalKey,         // 规范标识
+    String versionLabel,         // 版本标签
+    LocalDate effectiveFrom,     // 生效日期
+    LocalDate effectiveTo,       // 结束日期
+    DocumentLifecycleStatus lifecycleStatus,  // 时效状态
+    int authorityLevel,          // 权威等级
+    String jurisdiction          // 适用区域
 ) {}
 ```
 
-`sourceId` 有两个作用：
-1. 给 LLM 做引用标记，回答时可引用 `[1]` 表示来自第一个片段
-2. 给前端做来源展示，用户可点击序号查看原始文档位置
+### 时效字段的作用
+
+`ChunkReference` 现在携带完整的时效元数据，用于：
+
+1. **可解释回答**：LLM prompt 中的 `<source>` 标签包含 `versionLabel`、`effectiveFrom`、`effectiveTo`、`lifecycleStatus`，帮助模型理解资料版本和时效
+2. **前端展示**：用户可以看到引用的版本信息和生效期
+3. **引用校验**：`StreamingQueryController` 的 `validateAnswer()` 可以校验引用有效性
+
+### 向后兼容构造
+
+```java
+public ChunkReference(String documentId, String documentName, int chunkIndex,
+                      String chunkText, float score, int startPosition, int endPosition) {
+    this(documentId, documentName, chunkIndex, chunkText, score, startPosition, endPosition,
+         null, null, null, null, null, 0, null);
+}
+```
 
 ## 值对象的定位
 

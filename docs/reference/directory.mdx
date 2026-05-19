@@ -1,6 +1,6 @@
 ---
 title: 项目目录速查
-description: 模块结构与文档对应关系
+description: 模块结构与文档对应关系，含时效相关类
 ---
 
 # 项目目录速查
@@ -31,19 +31,33 @@ synapse/
 │   └── AuthBeanConfig, AuthDataInitializer, SaTokenSecurityConfig
 │
 ├── synapse-kb-domain/                 # 知识库领域层
-│   └── .../kb/model/                  # KnowledgeBase, Document, ChatSession
+│   └── .../kb/model/                  # KnowledgeBase, Document, ChatSession, Query, RagContext
+│   │                                  # DocumentMetadata, DocumentLifecycleStatus, DocumentSourceType
+│   │                                  # ChunkReference, DocumentChunk
 │   └── .../kb/repository/             # 仓储接口
 │   └── .../kb/service/                # RecursiveChunkingStrategy
 │
 ├── synapse-kb-application/            # 知识库应用层
 │   └── .../kb/port/
 │       ├── in/                        # IngestDocumentUseCase, QueryKnowledgeBaseUseCase
-│       ├── out/                       # VectorStorePort, EmbeddingPort
+│       │                              # UpdateDocumentMetadataUseCase (v1 不支持)
+│       │                              # SupersedeDocumentUseCase (v1 不支持)
+│       ├── out/                       # VectorStorePort, ChunkSearchIndexPort, EmbeddingPort
+│       │                              # RetrievalFilter
 │       └── service/                   # KnowledgeBaseApplicationService
 │
 ├── synapse-kb-adapter/                # 知识库适配器层
 │   └── .../kb/adapter/in/web/         # DocumentController, StreamingQueryController
-│   └── .../kb/adapter/out/            # MilvusVectorStoreAdapter, OllamaEmbeddingAdapter
+│   └── .../kb/adapter/out/            # MilvusVectorStoreAdapter (v3 collection)
+│   │                                  # MongoChunkSearchIndexAdapter
+│   │                                  # OllamaEmbeddingAdapter, OllamaQueryRewriteAdapter
+│   │                                  # OllamaStreamingLlmAdapter
+│   │                                  # ApacheTikaDocumentParserAdapter
+│   │                                  # GridFsDocumentContentStoreAdapter
+│   └── .../kb/adapter/out/persistence/entity/
+│                                      # DocumentDocument, ChatMessageDocument
+│                                      # ChatReferenceDocument, ChunkIndexDocument
+│                                      # ChunkPostingDocument, ChunkCorpusStatsDocument
 │
 ├── synapse-kb-config/                 # 知识库配置
 │   └── KnowledgeBaseBeanConfig
@@ -79,10 +93,12 @@ synapse-frontend/
 | DDD 概念 | [concepts/ddd](../concepts/ddd) |
 | 分层架构设计 | [concepts/layered-architecture](../concepts/layered-architecture) |
 | 登录完整流程 | [auth/flow](../auth/flow) |
-| 文档状态机 | [ingestion/domain](../ingestion/domain) |
-| 混合检索融合 | [query/application](../query/application) |
-| SSE 事件协议 | [reference/api/streaming-query](../reference/api/streaming-query) |
+| 文档状态机与时效 | [ingestion/domain](../ingestion/domain) |
+| 文档上传与摄入流程 | [ingestion/application](../ingestion/application) |
+| 混合检索融合 | [design/hybrid-retrieval](../design/hybrid-retrieval) |
 | 端口设计模式 | [design/ports](../design/ports) |
+| SSE 事件协议 | [reference/api/streaming-query](../reference/api/streaming-query) |
 | 递归分块算法 | [design/chunking](../design/chunking) |
 | 前端竞态防护 | [design/frontend](../design/frontend) |
 | 配置项参考 | [reference/configuration](../reference/configuration) |
+| 术语表 | [reference/glossary](../reference/glossary) |

@@ -1,6 +1,6 @@
 ---
 title: Application 层
-description: 用例编排、摄入流程、失败处理
+description: 用例编排、摄入流程、时效元数据处理、失败处理
 ---
 
 # 文档上传与摄入 —— Application 层
@@ -19,14 +19,19 @@ public interface IngestDocumentUseCase {
         String contentType,
         long fileSize,
         String contentHash,
-        InputStream content
-    ) {}
+        InputStream content,
+        DocumentMetadata metadata
+    ) {
+        public IngestDocumentCommand {
+            if (metadata == null) {
+                metadata = new DocumentMetadata();
+            }
+        }
+    }
 }
 ```
 
-`IngestDocumentCommand` 包含 `InputStream`（Java 标准库的 I/O 类型），Application 层允许使用 Java 标准库 I/O。
-
-因为 `InputStream` 是 Java 标准库的一部分，不是框架依赖。Application 层允许使用 Java 标准库的 I/O 类型。
+`IngestDocumentCommand` 现在包含 `DocumentMetadata`，所有时效字段通过上传接口传入。
 
 ## ingest() 方法 —— 同步上传
 
@@ -48,25 +53,38 @@ public DocumentId ingest(IngestDocumentCommand command) {
             throw new DomainException("此知识库已存在相同内容的文档");
         }
         if (existing.getStatus() == FAILED) {
-            // 清理失败残留后允许重新上传
             cleanupFailedDocument(existing);
         }
     }
 
-    // 3. 创建文档
+    // 3. 校验 supersedesDocumentId（如果存在）
+    DocumentMetadata metadata = command.metadata();
+    if (metadata.supersedesDocumentId() != null && !metadata.supersedesDocumentId().isBlank()) {
+        DocumentId oldId = new DocumentId(metadata.supersedesDocumentId());
+        Document oldDoc = documentRepository.findById(oldId)
+            .orElseThrow(() -> new DomainException("被替代文档不存在"));
+        if (!oldDoc.getKnowledgeBaseId().equals(command.knowledgeBaseId())) {
+            throw new DomainException("被替代文档必须属于同一知识库");
+        }
+        if (oldDoc.getLifecycleStatus() != DocumentLifecycleStatus.ACTIVE) {
+            throw new DomainException("被替代文档必须是 ACTIVE 状态");
+        }
+    }
+
+    // 4. 创建文档（携带 metadata）
     Document document = Document.create(
         command.knowledgeBaseId(), command.fileName(),
-        command.contentType(), command.fileSize(), command.contentHash()
+        command.contentType(), command.fileSize(), command.contentHash(), metadata
     );
 
-    // 4. 存储原始内容到 GridFS
+    // 5. 存储原始内容到 GridFS
     String contentObjectId = documentContentStorePort.store(
         command.knowledgeBaseId(), document.getId(),
         document.getFileName(), document.getFileType(), command.content()
     );
     document.attachContentObject(contentObjectId);
 
-    // 5. 保存文档（失败则回滚 GridFS）
+    // 6. 保存文档（失败则回滚 GridFS）
     try {
         document = documentRepository.save(document);
     } catch (RuntimeException e) {
@@ -74,7 +92,7 @@ public DocumentId ingest(IngestDocumentCommand command) {
         throw e;
     }
 
-    // 6. 创建摄入任务（失败则回滚文档和 GridFS）
+    // 7. 创建摄入任务（失败则回滚文档和 GridFS）
     try {
         ingestionJobRepository.save(
             IngestionJob.create(document.getId(), document.getKnowledgeBaseId(), contentObjectId)
@@ -88,6 +106,15 @@ public DocumentId ingest(IngestDocumentCommand command) {
     return document.getId();
 }
 ```
+
+### 版本替代校验
+
+上传时传入 `supersedesDocumentId` 会做前置校验：
+- 被替代文档必须存在
+- 必须属于同一知识库
+- 必须是 `ACTIVE` 状态
+
+**注意**：此时**不**立即修改旧文档。旧文档的替代发生在后台处理成功之后。
 
 ### 补偿逻辑分析
 
@@ -112,11 +139,17 @@ private void processDocument(Document document, String contentObjectId) {
         // 1. 解析文档
         List<DocumentChunk> chunks = parseDocumentChunks(document, contentObjectId);
 
-        // 2. 存储索引
+        // 2. 存储索引（携带 metadata）
         storeDocumentIndexes(document, chunks);
 
         document.setChunkCount(chunks.size());
         document.transitionTo(COMPLETED);
+
+        // 3. 新文档摄入成功后，再执行版本替代
+        if (document.getSupersedesDocumentId() != null
+                && !document.getSupersedesDocumentId().isBlank()) {
+            supersedeOldDocument(document);
+        }
 
     } catch (Exception e) {
         cleanupDocumentIndexesQuietly(document);
@@ -126,6 +159,24 @@ private void processDocument(Document document, String contentObjectId) {
     }
 }
 ```
+
+### 版本替代时机
+
+```java
+private void supersedeOldDocument(Document newDocument) {
+    DocumentId oldId = new DocumentId(newDocument.getSupersedesDocumentId());
+    Document oldDoc = documentRepository.findById(oldId).orElse(null);
+    if (oldDoc == null) {
+        log.warn("被替代文档不存在，跳过替代");
+        return;
+    }
+
+    oldDoc.supersedeBy(newDocument, newDocument.getEffectiveFrom());
+    documentRepository.save(oldDoc);
+}
+```
+
+**关键设计**：旧文档只在新文档**摄入成功并 COMPLETED 后**才标记 `SUPERSEDED`。如果新文档摄入失败，旧文档保持 `ACTIVE`，系统不会失去有效资料。
 
 ### parseDocumentChunks()
 
@@ -150,48 +201,58 @@ private void storeDocumentIndexes(Document document, List<DocumentChunk> chunks)
         chunks.stream().map(DocumentChunk::text).toList()
     );
 
-    // 2. 向量存储（Milvus）
+    // 2. 向量存储（Milvus v3）
+    DocumentMetadata metadata = toMetadata(document);
     vectorStorePort.store(
         document.getKnowledgeBaseId(), document.getId(),
-        document.getFileName(), chunks, embeddings
+        document.getFileName(), chunks, embeddings, metadata
     );
 
     // 3. 关键词索引（MongoDB）
     chunkSearchIndexPort.store(
         document.getKnowledgeBaseId(), document.getId(),
-        document.getFileName(), chunks
+        document.getFileName(), chunks, metadata
     );
 }
 ```
 
-**双写索引**：向量索引和关键词索引必须同时成功。如果其中一个失败，`cleanupDocumentIndexesQuietly()` 会清理已写入的数据。
+**双写索引**：向量索引和关键词索引必须同时成功，且都携带 `DocumentMetadata`。如果其中一个失败，`cleanupDocumentIndexesQuietly()` 会清理已写入的数据。
 
 ## 失败处理
 
 ```java
 private void handleIngestionFailure(IngestionJob job, Document document, Exception e) {
-    cleanupDocumentIndexesQuietly(document);
-
-    if (job.getAttempts() < maxAttempts) {
-        // 还有重试次数 → 标记为 RETRYING，设置退避时间
-        Duration backoff = Duration.ofSeconds(30 * (1L << job.getAttempts()));
-        job.markRetrying(safeFailureReason(e), Instant.now().plus(backoff));
+    String reason = safeFailureReason(e);
+    if (job.getAttempts() >= ingestionMaxAttempts) {
+        tryTransitionToFailed(document, reason);
+        documentRepository.save(document);
+        job.markFailed(reason);
     } else {
-        // 重试次数用尽 → 标记为 FAILED
-        job.markFailed(safeFailureReason(e));
-        document.transitionTo(FAILED, safeFailureReason(e));
+        job.markRetrying(reason, Instant.now().plus(backoffForAttempt(job.getAttempts())));
     }
     ingestionJobRepository.save(job);
-    documentRepository.save(document);
 }
 ```
 
 **退避策略**：
-- 第1次失败后：30秒后重试
-- 第2次失败后：60秒后重试
-- 第3次失败后：120秒后重试
+- 第1次失败后：30 秒后重试
+- 第2次失败后：2 分钟后重试
 
-指数退避避免频繁重试对系统造成压力。
+## v1 限制
+
+```java
+@Override
+public Document updateMetadata(DocumentId id, DocumentMetadata metadata) {
+    throw new DomainException("v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更");
+}
+
+@Override
+public void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo) {
+    throw new DomainException("v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更");
+}
+```
+
+v1 不支持在线修改已完成文档的 metadata，也不支持手动在线 supersede。正确的资料时效变更必须通过重新上传新版本完成。
 
 ## 出站端口
 
@@ -200,7 +261,7 @@ private void handleIngestionFailure(IngestionJob job, Document document, Excepti
 | `DocumentParserPort` | 解析文档为文本 |
 | `DocumentContentStorePort` | 存储/读取原始文件内容 |
 | `EmbeddingPort` | 文本向量化 |
-| `VectorStorePort` | 向量存储和检索 |
+| `VectorStorePort` | 向量存储和检索（v3 collection） |
 | `ChunkSearchIndexPort` | 关键词索引存储和检索 |
 | `IngestionJobRepository` | 摄入任务仓储 |
 | `AccessControlPort` | 权限检查 |

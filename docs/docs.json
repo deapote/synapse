@@ -96,6 +96,7 @@
           "design/ports",
           "design/reactive-bridge",
           "design/hybrid-retrieval",
+          "design/temporal-validity",
           "design/chunking",
           "design/frontend"
         ]

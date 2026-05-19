@@ -1,6 +1,6 @@
 ---
 title: 术语表
-description: DDD、RAG、Spring 术语速查
+description: DDD、RAG、Spring、资料时效性术语速查
 ---
 
 # 参考 —— 术语表
@@ -34,6 +34,22 @@ description: DDD、RAG、Spring 术语速查
 | SSE | Server-Sent Events | 服务器向客户端推送事件的单向流协议 |
 | 召回 | Recall | 检索阶段，从库中找出候选内容 |
 | 重排 | Rerank | 对召回结果重新排序，选出最佳内容 |
+
+## 资料时效性术语
+
+| 术语 | 英文 | 说明 |
+|------|------|------|
+| 资料时效性 | Temporal Validity | 文档/法规在特定时间点是否有效的业务属性 |
+| asOfDate | As-of Date | 查询时指定的"时间点"，检索只返回在该时间点有效的资料 |
+| effectiveFrom | Effective From | 资料生效日期（含） |
+| effectiveTo | Effective To | 资料排他结束日期；`effectiveTo=2025-01-01` 表示 2025-01-01 当天起无效 |
+| 排他结束日 | Exclusive End Date | `effectiveTo` 的语义：到达该日期即失效，不包含该日期 |
+| canonicalKey | Canonical Key | 规范标识，用于同一资料的多版本关联和去重 |
+| supersede | Supersede | 用新版本替代旧版本；旧文档标记 `SUPERSEDED` |
+| lifecycleStatus | Lifecycle Status | 业务时效状态：`ACTIVE`（生效中）、`SUPERSEDED`（已被替代）、`RETIRED`（已废止） |
+| RetrievalFilter | Retrieval Filter | 检索过滤条件，含必填 `asOfDate` 和可选 `sourceType`/`jurisdiction` |
+| 时效硬过滤 | Temporal Hard Filter | 在检索阶段直接排除过期资料，不是重排加权 |
+| 兜底过滤 | Fallback Filter | Application 层用 Mongo `Document` 真实状态做的二次时效校验 |
 
 ## Spring 术语
 

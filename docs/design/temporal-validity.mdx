@@ -1,0 +1,352 @@
+---
+title: 资料时效性治理
+description: 问题背景、领域模型、摄入版本链、检索过滤链路、API 使用示例、边界和 v1 限制
+---
+
+# 资料时效性治理
+
+## 问题背景
+
+在法规、政策、制度类知识库场景中，同一份资料往往存在多个历史版本：
+
+- 法规 A 于 2024-01-01 生效
+- 法规 A 修订版于 2025-01-01 生效，旧版同时废止
+- 用户问 "2024 年的规定是什么？" 时，系统必须返回 2024 版，而非 2025 版
+
+传统的 RAG 系统没有版本和时效概念，检索时可能同时命中新旧版本，导致 LLM 引用错误资料给出过时回答。
+
+Synapse 的资料时效性治理通过以下机制解决这个问题：
+1. 文档携带 `effectiveFrom`、`effectiveTo`、`lifecycleStatus`、`canonicalKey` 等时效元数据
+2. 检索时按 `asOfDate` 在 Milvus 和 Mongo 双侧执行硬过滤
+3. Application 层用 Mongo `Document` 真实状态兜底过滤
+4. 同 `canonicalKey` 多版本去重，只保留最优版本
+
+## 领域模型
+
+### Document 与时效相关字段
+
+```java
+public class Document {
+    // 摄入状态（与时效状态严格分离）
+    private DocumentStatus status;  // PENDING/PROCESSING/COMPLETED/FAILED
+
+    // 时效元数据
+    private DocumentSourceType sourceType;           // LEGAL/POLICY/GENERAL
+    private String canonicalKey;                     // 多版本关联键
+    private String versionLabel;                     // 版本标签
+    private LocalDate effectiveFrom;                 // 生效日期
+    private LocalDate effectiveTo;                   // 排他结束日期
+    private DocumentLifecycleStatus lifecycleStatus; // ACTIVE/SUPERSEDED/RETIRED
+    private String supersedesDocumentId;             // 被替代的旧文档 ID
+    private int authorityLevel;                      // 权威等级
+    private String jurisdiction;                     // 适用区域
+}
+```
+
+### DocumentMetadata —— 值对象
+
+```java
+public record DocumentMetadata(
+    DocumentSourceType sourceType,
+    String canonicalKey,
+    String versionLabel,
+    LocalDate effectiveFrom,
+    LocalDate effectiveTo,
+    String supersedesDocumentId,
+    Integer authorityLevel,
+    String jurisdiction
+) {}
+```
+
+所有字段均可空，domain 层提供默认值。
+
+### DocumentLifecycleStatus
+
+```java
+public enum DocumentLifecycleStatus {
+    ACTIVE,      // 生效中，可被检索
+    SUPERSEDED,  // 已被新版本替代，但在 asOfDate 之前仍有效
+    RETIRED      // 已废止，任何 asOfDate 都不可检索
+}
+```
+
+### effectiveTo 的排他语义
+
+`effectiveTo` 是**排他结束日**：
+
+| effectiveTo | 在 asOfDate 下是否有效 |
+|-------------|----------------------|
+| null | 永远有效 |
+| 2025-01-01 | asOfDate < 2025-01-01 时有效；asOfDate >= 2025-01-01 时无效 |
+
+这意味着新版本的 `effectiveFrom` 等于旧版本的 `effectiveTo` 时，两者之间没有重叠，也没有间隙。
+
+## 摄入版本链
+
+### 上传第一版
+
+```bash
+curl -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/documents" \
+  -H "synapse-token: xxx" \
+  -F "file=@law-2024.pdf" \
+  -F "canonicalKey=law-x" \
+  -F "versionLabel=2024 版" \
+  -F "effectiveFrom=2024-01-01" \
+  -F "sourceType=LEGAL"
+```
+
+创建的 Document：
+- `status=PENDING` → `PROCESSING` → `COMPLETED`
+- `lifecycleStatus=ACTIVE`
+- `effectiveFrom=2024-01-01`
+- `effectiveTo=null`
+
+### 上传第二版（替代第一版）
+
+```bash
+curl -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/documents" \
+  -H "synapse-token: xxx" \
+  -F "file=@law-2025.pdf" \
+  -F "canonicalKey=law-x" \
+  -F "versionLabel=2025 版" \
+  -F "effectiveFrom=2025-01-01" \
+  -F "sourceType=LEGAL" \
+  -F "supersedesDocumentId=<v1DocumentId>"
+```
+
+创建的 Document：
+- `status=PENDING` → `PROCESSING` → `COMPLETED`
+- `lifecycleStatus=ACTIVE`
+- `effectiveFrom=2025-01-01`
+- `supersedesDocumentId=<v1DocumentId>`
+
+旧文档在第一版 COMPLETED 后被自动标记：
+- `lifecycleStatus=SUPERSEDED`
+- `effectiveTo=2025-01-01`（新版本的 effectiveFrom）
+
+### 版本替代的关键设计
+
+**旧文档只在新文档摄入成功后才被替代**。如果新版本摄入失败：
+- 旧文档保持 `ACTIVE`
+- 系统不会失去有效资料
+- 用户可重试新版本上传
+
+```java
+private void supersedeOldDocument(Document newDocument) {
+    DocumentId oldId = new DocumentId(newDocument.getSupersedesDocumentId());
+    Document oldDoc = documentRepository.findById(oldId).orElse(null);
+    if (oldDoc == null) {
+        log.warn("被替代文档不存在，跳过替代");
+        return;
+    }
+
+    oldDoc.supersedeBy(newDocument, newDocument.getEffectiveFrom());
+    documentRepository.save(oldDoc);
+}
+```
+
+## 检索过滤链路
+
+### Query 与 asOfDate
+
+```java
+public record Query(
+    KnowledgeBaseId knowledgeBaseId,
+    String text,
+    String sessionId,
+    LocalDate asOfDate
+) {}
+```
+
+`asOfDate` 的解析逻辑：
+
+```java
+private LocalDate resolveAsOfDate(Query query) {
+    if (query.asOfDate() != null) {
+        return query.asOfDate();
+    }
+    LocalDate parsed = parseTemporalIntent(query.text());
+    return parsed != null ? parsed : LocalDate.now();
+}
+```
+
+轻量时间意图解析支持：
+- `"2024年规定"` → `2024-12-31`
+- `"现在适用"` → `LocalDate.now()`
+
+### RetrievalFilter
+
+```java
+public record RetrievalFilter(
+    LocalDate asOfDate,           // 必填硬过滤
+    DocumentSourceType sourceType, // 可选扩展过滤
+    String jurisdiction            // 可选扩展过滤
+) {}
+```
+
+### 三层过滤
+
+#### 第一层：Milvus scalar 硬过滤
+
+```java
+private String buildSearchFilter(KnowledgeBaseId knowledgeBaseId, RetrievalFilter filter) {
+    long asOfEpochDay = filter.asOfDate().toEpochDay();
+    return "knowledgeBaseId == '" + kbId + "'"
+        + " && effectiveFromEpochDay <= " + asOfEpochDay
+        + " && (effectiveToEpochDay == " + Long.MAX_VALUE
+        + " || effectiveToEpochDay > " + asOfEpochDay + ")"
+        + " && lifecycleStatus in ['ACTIVE', 'SUPERSEDED']";
+}
+```
+
+#### 第二层：Mongo BM25 Criteria 硬过滤
+
+```java
+Criteria criteria = Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+    .and("token").in(uniqueQueryTokens)
+    .and("lifecycleStatus").in("ACTIVE", "SUPERSEDED")
+    .and("effectiveFromEpochDay").lte(asOfEpochDay)
+    .andOperator(new Criteria().orOperator(
+        Criteria.where("effectiveToEpochDay").is(Long.MAX_VALUE),
+        Criteria.where("effectiveToEpochDay").gt(asOfEpochDay)
+    ));
+```
+
+#### 第三层：Application 兜底过滤
+
+```java
+private List<ChunkReference> filterByDocumentEffectiveDate(
+        List<ChunkReference> references, LocalDate asOfDate) {
+    Set<String> documentIds = references.stream()
+        .map(ChunkReference::documentId).collect(Collectors.toSet());
+    Map<String, Document> documentMap = new HashMap<>();
+    for (String docId : documentIds) {
+        documentRepository.findById(new DocumentId(docId))
+            .ifPresent(doc -> documentMap.put(docId, doc));
+    }
+    return references.stream()
+        .filter(ref -> {
+            Document doc = documentMap.get(ref.documentId());
+            if (doc == null) return true;
+            return doc.isEffectiveOn(asOfDate);
+        })
+        .toList();
+}
+```
+
+### 完整检索 pipeline
+
+```
+向量召回（Milvus v3，scalar 硬过滤）
+    ↕ 并行
+关键词召回（Mongo BM25，Criteria 硬过滤）
+    ↓
+mergeAndRerank（加权融合分数 [0, 1]）
+    ↓
+filterByDocumentEffectiveDate（Mongo Document 真实状态兜底）
+    ↓
+deduplicateByCanonicalKey（同 canonicalKey 多版本去重）
+    ↓
+limit(topK)
+```
+
+### 同 canonicalKey 多版本去重
+
+```java
+private List<ChunkReference> deduplicateByCanonicalKey(List<ChunkReference> ranked) {
+    Map<String, ChunkReference> bestByCanonicalKey = new LinkedHashMap<>();
+    List<ChunkReference> result = new ArrayList<>();
+
+    for (ChunkReference ref : ranked) {
+        String key = ref.canonicalKey();
+        if (key == null || key.isBlank()) {
+            result.add(ref);
+            continue;
+        }
+        ChunkReference existing = bestByCanonicalKey.get(key);
+        if (existing == null) {
+            bestByCanonicalKey.put(key, ref);
+            result.add(ref);
+        } else {
+            // authorityLevel 高者优先；同等级 effectiveFrom 更新者优先
+            if (ref.authorityLevel() > existing.authorityLevel()
+                || (ref.authorityLevel() == existing.authorityLevel()
+                    && ref.effectiveFrom() != null && existing.effectiveFrom() != null
+                    && ref.effectiveFrom().isAfter(existing.effectiveFrom()))) {
+                bestByCanonicalKey.put(key, ref);
+                int idx = result.indexOf(existing);
+                if (idx >= 0) result.set(idx, ref);
+            }
+        }
+    }
+    return result.stream().limit(topK).toList();
+}
+```
+
+**去重规则**：
+- 同一 `canonicalKey` 只保留一个版本
+- `authorityLevel` 高者优先（适用于不同层级法规的冲突）
+- 同等级时，`effectiveFrom` 更新者优先（新法规替代旧法规）
+
+## API 使用示例
+
+### 上传带时效元数据的文档
+
+```bash
+curl -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/documents" \
+  -H "synapse-token: xxx" \
+  -F "file=@regulation.pdf" \
+  -F "canonicalKey=reg-x" \
+  -F "versionLabel=2024 版" \
+  -F "effectiveFrom=2024-01-01" \
+  -F "effectiveTo=2025-01-01" \
+  -F "sourceType=LEGAL" \
+  -F "authorityLevel=10" \
+  -F "jurisdiction=全国"
+```
+
+### 查询特定日期的适用资料
+
+```bash
+curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "query": "这项法规的主要内容是什么？",
+    "asOfDate": "2024-06-01"
+  }'
+```
+
+### 使用时间意图解析（自动识别年份）
+
+```bash
+curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{"query": "2024年新规有什么变化？"}'
+```
+
+系统会自动解析出 `2024-12-31` 作为 `asOfDate`。
+
+## 边界和 v1 限制
+
+### v1 限制
+
+- **不支持在线修改已完成文档的 metadata**：`PUT /api/documents/{id}/metadata` 返回 `DomainException`
+- **不支持手动在线 supersede**：`POST /api/documents/{id}/supersede` 返回 `DomainException`
+- **Milvus/Mongo 不支持在线 metadata 更新**：`updateDocumentMetadata()` 均抛出 `UnsupportedOperationException`
+
+**正确做法**：重新上传新版本，并在上传时指定 `supersedesDocumentId`。
+
+### 存量数据迁移
+
+旧 collection `synapse_document_chunks`（v1/v2）不包含时效字段。v3 collection `synapse_document_chunks_v3` 拥有完整的时效 scalar 字段。
+
+**存量数据必须重新摄入或迁移到 v3**，否则检索时无法执行 `effectiveFromEpochDay` / `effectiveToEpochDay` / `lifecycleStatus` 硬过滤，时效治理不完整。
+
+### 设计约束
+
+- `MilvusVectorStoreAdapter` 不得依赖 Mongo BM25 adapter/entity
+- 不允许为了在线更新 metadata 对 Milvus 做无补偿 delete + reinsert
+- 时效过滤必须在 `mergeAndRerank` 后、`limit(topK)` 前执行
+- 禁止只用时间衰减/重排替代有效期硬过滤

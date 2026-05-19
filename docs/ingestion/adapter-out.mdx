@@ -1,6 +1,6 @@
 ---
 title: Adapter-Out 层
-description: Tika 解析、Embedding、Milvus、BM25 索引、GridFS
+description: Tika 解析、Embedding、Milvus v3、BM25 索引、GridFS、时效字段存储
 ---
 
 # 文档上传与摄入 —— Adapter-Out 层
@@ -107,59 +107,74 @@ public class OllamaEmbeddingAdapter implements EmbeddingPort {
 
 文件：`synapse-kb-adapter/.../out/vector/MilvusVectorStoreAdapter.java`
 
+使用 **Milvus v2 SDK**，操作 **v3 collection**（默认 `synapse_document_chunks_v3`）。
+
+### v3 Collection Schema
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | VarChar(64) | 主键 |
+| `knowledgeBaseId` | VarChar(64) | Partition Key |
+| `documentId` | VarChar(64) | 文档 ID |
+| `documentName` | VarChar(256) | 文档名称 |
+| `chunkIndex` | Int32 | 分块序号 |
+| `chunkText` | VarChar(65535) | 分块文本 |
+| `vector` | FloatVector(1536) | 向量 |
+| `startPosition` | Int32 | 起始位置 |
+| `endPosition` | Int32 | 结束位置 |
+| `effectiveFromEpochDay` | Int64 | 生效日期（Epoch Day） |
+| `effectiveToEpochDay` | Int64 | 结束日期（Epoch Day），永久有效时为 `Long.MAX_VALUE` |
+| `lifecycleStatus` | VarChar(16) | `ACTIVE` / `SUPERSEDED` / `RETIRED` |
+| `canonicalKey` | VarChar(256) | 规范标识 |
+| `versionLabel` | VarChar(64) | 版本标签 |
+| `authorityLevel` | Int32 | 权威等级 |
+| `jurisdiction` | VarChar(128) | 适用区域 |
+| `sourceType` | VarChar(16) | `LEGAL` / `POLICY` / `GENERAL` |
+
+索引：
+- `vector`：HNSW，COSINE 度量
+- `knowledgeBaseId`、`documentId`、`lifecycleStatus`、`canonicalKey`、`sourceType`：TRIE
+- `effectiveFromEpochDay`、`effectiveToEpochDay`：STL_SORT
+
+### store()
+
 ```java
-@Component
-public class MilvusVectorStoreAdapter implements VectorStorePort {
-    @Override
-    public void store(KnowledgeBaseId kbId, DocumentId docId, String docName,
-                      List<DocumentChunk> chunks, List<float[]> embeddings) {
-        List<JsonObject> rows = new ArrayList<>();
-        for (int i = 0; i < chunks.size(); i++) {
-            DocumentChunk chunk = chunks.get(i);
-            float[] embedding = embeddings.get(i);
-            JsonObject row = new JsonObject();
-            row.addProperty("id", docId.value() + "-" + i);
-            row.addProperty("knowledgeBaseId", kbId.value());
-            row.addProperty("documentId", docId.value());
-            row.addProperty("chunkIndex", i);
-            row.addProperty("chunkText", chunk.text());
-            row.add("vector", toJsonArray(embedding));
-            rows.add(row);
-        }
-        milvusClient.insert(collectionName, rows);
-    }
-
-    @Override
-    public List<ChunkReference> search(KnowledgeBaseId kbId, float[] queryEmbedding, int topK) {
-        // 构建查询条件：必须匹配 knowledgeBaseId
-        QueryWrapper wrapper = new QueryWrapper();
-        wrapper.eq("knowledgeBaseId", kbId.value());
-
-        SearchParam param = SearchParam.newBuilder()
-            .withCollectionName(collectionName)
-            .withVectors(List.of(queryEmbedding))
-            .withTopK(topK)
-            .withMetricType(MetricType.COSINE)
-            .withExpr("knowledgeBaseId == '" + kbId.value() + "'")
-            .build();
-
-        return milvusClient.search(param).getResults().stream()
-            .map(this::toChunkReference).toList();
-    }
+@Override
+public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
+                  List<DocumentChunk> chunks, List<float[]> embeddings, DocumentMetadata metadata) {
+    List<JsonObject> data = toRows(knowledgeBaseId, documentId, documentName, chunks, embeddings, metadata);
+    insert(v3CollectionName, data);
 }
 ```
 
-### 安全边界：禁止跨知识库查询
+### deleteByDocumentId()
 
 ```java
-// 上传时：向量带上了知识库 ID
-vectorStorePort.store(kbId, documentId, chunks, embeddings);
-
-// 查询时：只搜索指定知识库
-vectorStorePort.search(kbId, queryEmbedding, topK);
+@Override
+public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) {
+    client.delete(DeleteReq.builder()
+        .collectionName(v3CollectionName)
+        .filter("knowledgeBaseId == '" + safeFilterValue(knowledgeBaseId.value())
+            + "' && documentId == '" + safeFilterValue(documentId.value()) + "'")
+        .build());
+}
 ```
 
-如果不传 `kbId`，用户在知识库 B 提问时可能检索到知识库 A 的文档，造成数据泄露。
+**安全边界**：删除必须同时匹配 `knowledgeBaseId` 与 `documentId`，禁止跨知识库操作。
+
+### updateDocumentMetadata() —— v1 不支持
+
+```java
+@Override
+public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId,
+                                    DocumentMetadata metadata) {
+    throw new UnsupportedOperationException(
+        "v1 不支持在线修改向量索引元数据，请通过重新摄入新版本完成时效变更"
+    );
+}
+```
+
+v1 不支持在线更新 Milvus scalar 字段。正确的时效变更必须通过重新上传新版本完成。
 
 ## MongoChunkSearchIndexAdapter
 
@@ -170,6 +185,33 @@ vectorStorePort.search(kbId, queryEmbedding, topK);
 - 英文按词分词
 - 维护倒排索引 `ChunkPostingDocument`
 - 维护语料统计 `ChunkCorpusStatsDocument`
+
+### ChunkIndexDocument / ChunkPostingDocument 字段
+
+除基础字段（`knowledgeBaseId`、`documentId`、`chunkIndex`、`chunkText` 等）外，还包含：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `effectiveFromEpochDay` | long | 生效日期（Epoch Day） |
+| `effectiveToEpochDay` | long | 结束日期（Epoch Day），永久有效时为 `Long.MAX_VALUE` |
+| `lifecycleStatus` | string | `ACTIVE` / `SUPERSEDED` / `RETIRED` |
+| `canonicalKey` | string | 规范标识 |
+| `versionLabel` | string | 版本标签 |
+| `authorityLevel` | int | 权威等级 |
+| `jurisdiction` | string | 适用区域 |
+| `sourceType` | string | `LEGAL` / `POLICY` / `GENERAL` |
+
+### updateDocumentMetadata() —— v1 不支持
+
+```java
+@Override
+public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId,
+                                    DocumentMetadata metadata) {
+    throw new UnsupportedOperationException(
+        "v1 不支持在线修改关键词索引元数据，请通过重新摄入新版本完成时效变更"
+    );
+}
+```
 
 ## GridFsDocumentContentStoreAdapter
 
@@ -193,3 +235,9 @@ public class GridFsDocumentContentStoreAdapter implements DocumentContentStorePo
 ```
 
 GridFS 是 MongoDB 的文件存储系统，适合存储大文件（超过 16MB 的文档）。
+
+## 存量数据迁移说明
+
+旧 collection `synapse_document_chunks`（v1/v2）不包含时效字段。v3 collection `synapse_document_chunks_v3` 拥有完整的时效 scalar 字段。
+
+**存量数据必须重新摄入或迁移到 v3**，否则检索时无法执行 `effectiveFromEpochDay` / `effectiveToEpochDay` / `lifecycleStatus` 硬过滤，时效治理不完整。
