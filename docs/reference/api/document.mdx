@@ -1,6 +1,6 @@
 ---
 title: 文档 API
-description: 上传、列表、删除、重试文档摄入，含 metadata 参数和时效字段
+description: 上传、列表、删除、重试、元数据治理、版本链、审计事件，含 metadata 参数和时效字段
 ---
 
 # API 参考 —— 文档
@@ -33,13 +33,13 @@ curl -X POST http://localhost:8082/api/knowledge-bases/kb-uuid/documents \
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | file | File | 是 | 文档文件 |
-| sourceType | string | 否 | `LEGAL`、`POLICY`、`GENERAL` |
+| sourceType | string | 否 | `LEGAL`、`POLICY`、`GENERAL`，默认 `GENERAL` |
 | canonicalKey | string | 否 | 规范标识，用于同一资料的多版本关联 |
 | versionLabel | string | 否 | 版本标签，如 "2024 版" |
-| effectiveFrom | string | 否 | 生效日期，格式 `YYYY-MM-DD` |
+| effectiveFrom | string | 否 | 生效日期，格式 `YYYY-MM-DD`，默认上传日期 |
 | effectiveTo | string | 否 | 排他结束日期，格式 `YYYY-MM-DD` |
 | supersedesDocumentId | string | 否 | 被替代的旧文档 ID |
-| authorityLevel | int | 否 | 权威等级，数值越高优先级越高 |
+| authorityLevel | int | 否 | 权威等级，数值越高优先级越高，默认 0 |
 | jurisdiction | string | 否 | 适用区域/管辖范围 |
 
 ### 响应
@@ -64,7 +64,12 @@ curl -X POST http://localhost:8082/api/knowledge-bases/kb-uuid/documents \
   "lifecycleStatus": "ACTIVE",
   "supersedesDocumentId": null,
   "authorityLevel": 10,
-  "jurisdiction": "全国"
+  "jurisdiction": "全国",
+  "metadataVersion": 0,
+  "indexedMetadataVersion": 0,
+  "indexStatus": "SYNCED",
+  "lastIndexRefreshAt": null,
+  "lastIndexFailureReason": null
 }
 ```
 
@@ -89,6 +94,11 @@ curl -X POST http://localhost:8082/api/knowledge-bases/kb-uuid/documents \
 | supersedesDocumentId | string | 被替代的旧文档 ID |
 | authorityLevel | int | 权威等级 |
 | jurisdiction | string | 适用区域 |
+| metadataVersion | long | metadata 版本号，每次变更递增 |
+| indexedMetadataVersion | long | 当前索引对应的 metadata 版本 |
+| indexStatus | string | `SYNCED`/`STALE`/`REFRESHING`/`FAILED` |
+| lastIndexRefreshAt | string | 上次索引刷新时间（ISO 8601） |
+| lastIndexFailureReason | string | 上次索引刷新失败原因 |
 
 ### 权限
 
@@ -105,14 +115,25 @@ curl -X POST http://localhost:8082/api/knowledge-bases/kb-uuid/documents \
 
 ## GET /api/knowledge-bases/{kbId}/documents
 
-查询知识库下的文档列表。
+查询知识库下的文档列表，支持筛选。
 
 ### 请求
 
 ```bash
-curl "http://localhost:8082/api/knowledge-bases/kb-uuid/documents?page=0&size=20" \
+curl "http://localhost:8082/api/knowledge-bases/kb-uuid/documents?page=0&size=20&sourceType=LEGAL&lifecycleStatus=ACTIVE&indexStatus=SYNCED&canonicalKey=regulation-a" \
   -H "synapse-token: xxx"
 ```
+
+**查询参数**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| page | int | 页码，默认 0 |
+| size | int | 每页大小，默认 20，最大 100 |
+| sourceType | string | 按资料类型筛选：`LEGAL`/`POLICY`/`GENERAL` |
+| lifecycleStatus | string | 按时效状态筛选：`ACTIVE`/`SUPERSEDED`/`RETIRED` |
+| indexStatus | string | 按索引状态筛选：`SYNCED`/`STALE`/`REFRESHING`/`FAILED` |
+| canonicalKey | string | 按规范标识精确匹配 |
 
 ### 响应
 
@@ -142,6 +163,10 @@ curl -X DELETE http://localhost:8082/api/documents/doc-uuid \
 ### 权限
 
 `KB_DELETE`
+
+### 说明
+
+删除文档时会同时清理：Milvus 向量索引、Mongo BM25 关键词索引、Mongo 中的索引刷新任务。
 
 ---
 
@@ -173,26 +198,247 @@ curl -X POST http://localhost:8082/api/documents/doc-uuid/retry \
 
 ## PUT /api/documents/{id}/metadata
 
-**v1 不支持**。返回 `DomainException`：
+在线修改文档元数据（v2）。
 
-```json
-{
-  "message": "v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更"
-}
+### 请求
+
+```bash
+curl -X PUT http://localhost:8082/api/documents/doc-uuid/metadata \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "canonicalKey": "regulation-a-updated",
+    "versionLabel": "2024 修订版",
+    "effectiveTo": "2025-06-01",
+    "authorityLevel": 15,
+    "jurisdiction": "全国"
+  }'
 ```
 
-正确的资料时效变更必须通过重新上传新版本完成。
+**请求体**：JSON。字段遵循 `PatchValue<T>` 语义：
+- 不传字段 = `unset`（不修改）
+- 传具体值 = `set`（覆盖）
+- 传 `null` = `clear`（清空），但 `sourceType` 和 `effectiveFrom` 不允许 `clear`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| sourceType | string | `LEGAL`/`POLICY`/`GENERAL`，不允许 `null` |
+| canonicalKey | string | 可传 `null` 清空 |
+| versionLabel | string | 可传 `null` 清空 |
+| effectiveFrom | string | `YYYY-MM-DD`，不允许 `null` |
+| effectiveTo | string | 可传 `null` 清空 |
+| authorityLevel | int | 可传 `null` 清空（回退为 0） |
+| jurisdiction | string | 可传 `null` 清空 |
+
+### 响应
+
+**成功 (200)**：更新后的文档信息。`indexStatus` 为 `STALE`，后台自动触发索引刷新。
+
+**失败 (400)**：
+- `effectiveTo <= effectiveFrom` → "失效日期必须晚于生效日期"
+- `authorityLevel < 0` → "权威等级不能为负数"
+- `sourceType = null` → "资料类型不允许清空"
+- `effectiveFrom = null` → "生效日期不允许清空"
+
+### 权限
+
+`KB_WRITE`
 
 ---
 
 ## POST /api/documents/{id}/supersede
 
-**v1 不支持**。返回 `DomainException`：
+手动建立版本替代关系（v2）。
 
-```json
-{
-  "message": "v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更"
-}
+### 请求
+
+```bash
+curl -X POST http://localhost:8082/api/documents/old-doc-uuid/supersede \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "newDocumentId": "new-doc-uuid",
+    "effectiveTo": "2025-01-01"
+  }'
 ```
 
-正确的版本替代必须通过重新上传新版本并指定 `supersedesDocumentId` 完成。
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| newDocumentId | string | 是 | 替代旧文档的新文档 ID |
+| effectiveTo | string | 是 | 旧文档失效日期，格式 `YYYY-MM-DD` |
+
+### 响应
+
+**成功 (200)**：无响应体。
+
+**失败 (400)**：
+- 旧文档不是 `ACTIVE` → "仅 ACTIVE 文档可被替代"
+- 新旧文档不属于同一知识库 → "被替代文档与替代文档必须属于同一知识库"
+- `effectiveTo` 早于旧文档 `effectiveFrom` → "替代失效日期不得早于文档生效日期"
+
+### 权限
+
+`KB_WRITE`
+
+---
+
+## POST /api/documents/{id}/retire
+
+废止文档（v2）。
+
+### 请求
+
+```bash
+curl -X POST http://localhost:8082/api/documents/doc-uuid/retire \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "effectiveTo": "2025-01-01"
+  }'
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| effectiveTo | string | 否 | 废止生效日期，格式 `YYYY-MM-DD`。不传则立即废止 |
+
+### 响应
+
+**成功 (200)**：更新后的文档信息，`lifecycleStatus` 为 `RETIRED`。
+
+### 权限
+
+`KB_WRITE`
+
+---
+
+## POST /api/documents/{id}/reactivate
+
+重新启用已废止文档（v2）。
+
+### 请求
+
+```bash
+curl -X POST http://localhost:8082/api/documents/doc-uuid/reactivate \
+  -H "synapse-token: xxx"
+```
+
+### 响应
+
+**成功 (200)**：更新后的文档信息，`lifecycleStatus` 为 `ACTIVE`，`effectiveTo` 被清除。
+
+### 权限
+
+`KB_WRITE`
+
+---
+
+## POST /api/documents/{id}/reindex
+
+强制重建索引（v2）。
+
+### 请求
+
+```bash
+curl -X POST http://localhost:8082/api/documents/doc-uuid/reindex \
+  -H "synapse-token: xxx"
+```
+
+### 响应
+
+**成功 (200)**：更新后的文档信息，`indexStatus` 为 `STALE`，后台触发索引刷新。
+
+### 权限
+
+`KB_WRITE`
+
+### 说明
+
+用于 `FAILED` 状态恢复或人工干预。会递增 `metadataVersion` 并创建新的刷新任务。
+
+---
+
+## GET /api/documents/{id}/version-chain
+
+查询文档的版本链（v2）。
+
+### 请求
+
+```bash
+curl "http://localhost:8082/api/documents/doc-uuid/version-chain" \
+  -H "synapse-token: xxx"
+```
+
+### 响应
+
+**成功 (200)**：文档数组，按替代关系排序。
+
+```json
+[
+  {
+    "id": "doc-v1-uuid",
+    "versionLabel": "2023 版",
+    "lifecycleStatus": "SUPERSEDED",
+    "effectiveFrom": "2023-01-01",
+    "effectiveTo": "2024-01-01"
+  },
+  {
+    "id": "doc-v2-uuid",
+    "versionLabel": "2024 版",
+    "lifecycleStatus": "ACTIVE",
+    "effectiveFrom": "2024-01-01",
+    "effectiveTo": null
+  }
+]
+```
+
+### 权限
+
+`KB_READ`
+
+---
+
+## GET /api/documents/{id}/audit-events
+
+查询文档的审计事件（v2）。
+
+### 请求
+
+```bash
+curl "http://localhost:8082/api/documents/doc-uuid/audit-events" \
+  -H "synapse-token: xxx"
+```
+
+### 响应
+
+**成功 (200)**：审计事件数组。
+
+```json
+[
+  {
+    "id": "audit-uuid",
+    "documentId": "doc-uuid",
+    "knowledgeBaseId": "kb-uuid",
+    "actorUserId": "user-uuid",
+    "action": "METADATA_UPDATED",
+    "beforeSnapshot": "{\"canonicalKey\":\"old\"}",
+    "afterSnapshot": "{\"canonicalKey\":\"new\"}",
+    "reason": null,
+    "createdAt": "2024-06-15T10:30:00Z"
+  }
+]
+```
+
+**action 取值**：
+- `METADATA_UPDATED` — 元数据修改
+- `SUPERSEDED` — 被替代
+- `RETIRED` — 被废止
+- `REACTIVATED` — 被重新启用
+- `INDEX_REFRESH_REQUESTED` — 强制重建索引
+
+### 权限
+
+`KB_READ`

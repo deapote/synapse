@@ -1,6 +1,6 @@
 ---
 title: 资料时效性治理
-description: 问题背景、领域模型、摄入版本链、检索过滤链路、API 使用示例、边界和 v1 限制
+description: 问题背景、领域模型、摄入版本链、检索过滤链路、在线治理、索引一致性、API 使用示例
 ---
 
 # 资料时效性治理
@@ -20,6 +20,7 @@ Synapse 的资料时效性治理通过以下机制解决这个问题：
 2. 检索时按 `asOfDate` 在 Milvus 和 Mongo 双侧执行硬过滤
 3. Application 层用 Mongo `Document` 真实状态兜底过滤
 4. 同 `canonicalKey` 多版本去重，只保留最优版本
+5. **v2** 提供完整的在线治理能力：metadata patch、手动 supersede、retire/reactivate、强制 reindex、索引状态追踪、审计日志
 
 ## 领域模型
 
@@ -34,12 +35,19 @@ public class Document {
     private DocumentSourceType sourceType;           // LEGAL/POLICY/GENERAL
     private String canonicalKey;                     // 多版本关联键
     private String versionLabel;                     // 版本标签
-    private LocalDate effectiveFrom;                 // 生效日期
+    private LocalDate effectiveFrom;                 // 生效日期（必填）
     private LocalDate effectiveTo;                   // 排他结束日期
     private DocumentLifecycleStatus lifecycleStatus; // ACTIVE/SUPERSEDED/RETIRED
     private String supersedesDocumentId;             // 被替代的旧文档 ID
     private int authorityLevel;                      // 权威等级
     private String jurisdiction;                     // 适用区域
+
+    // v2: 索引同步状态
+    private long metadataVersion;           // 每次 metadata 变更递增
+    private long indexedMetadataVersion;    // 当前索引对应的 metadata 版本
+    private DocumentIndexStatus indexStatus; // SYNCED/STALE/REFRESHING/FAILED
+    private Instant lastIndexRefreshAt;
+    private String lastIndexFailureReason;
 }
 ```
 
@@ -58,7 +66,10 @@ public record DocumentMetadata(
 ) {}
 ```
 
-所有字段均可空，domain 层提供默认值。
+- `sourceType` 默认 `GENERAL`
+- `effectiveFrom` 默认上传日期，**必填且不允许清空**
+- `lifecycleStatus` 默认 `ACTIVE`
+- `authorityLevel` 默认 `0`
 
 ### DocumentLifecycleStatus
 
@@ -70,6 +81,22 @@ public enum DocumentLifecycleStatus {
 }
 ```
 
+### DocumentIndexStatus
+
+```java
+public enum DocumentIndexStatus {
+    SYNCED,      // 索引与 Mongo 权威状态一致
+    STALE,       // Mongo 状态已变，索引待刷新
+    REFRESHING,  // 索引刷新任务正在执行
+    FAILED       // 索引刷新失败，需人工干预
+}
+```
+
+三个状态维度严格分离：
+- `DocumentStatus` 管**摄入过程**
+- `DocumentLifecycleStatus` 管**业务时效**
+- `DocumentIndexStatus` 管**索引一致性**
+
 ### effectiveTo 的排他语义
 
 `effectiveTo` 是**排他结束日**：
@@ -80,6 +107,18 @@ public enum DocumentLifecycleStatus {
 | 2025-01-01 | asOfDate < 2025-01-01 时有效；asOfDate >= 2025-01-01 时无效 |
 
 这意味着新版本的 `effectiveFrom` 等于旧版本的 `effectiveTo` 时，两者之间没有重叠，也没有间隙。
+
+### PatchValue<T> —— v2 在线编辑语义
+
+```java
+public final class PatchValue<T> {
+    public static <T> PatchValue<T> unset() { ... }  // 不修改
+    public static <T> PatchValue<T> set(T value) { ... }  // 覆盖
+    public static <T> PatchValue<T> clear() { ... }  // 显式清空
+}
+```
+
+在线编辑必须区分"不传"和"传 null"。`sourceType` 和 `effectiveFrom` 不允许 `clear`，其余字段可 `clear`。
 
 ## 摄入版本链
 
@@ -144,6 +183,104 @@ private void supersedeOldDocument(Document newDocument) {
     documentRepository.save(oldDoc);
 }
 ```
+
+## v2 在线治理能力
+
+### 在线 metadata patch
+
+`PUT /api/documents/{id}/metadata` 支持在线修改文档元数据。修改后：
+1. `document.patchMetadata(patch)` 原子校验（先计算候选值，校验通过后统一赋值）
+2. `document.markIndexStale()` → `metadataVersion++`，`indexStatus = STALE`
+3. 创建 `DocumentIndexRefreshJob`
+4. 写审计日志 `METADATA_UPDATED`
+
+约束：
+- `sourceType` 不允许 `clear`
+- `effectiveFrom` 不允许 `clear`
+- `effectiveTo <= effectiveFrom` 被拒绝
+- `authorityLevel < 0` 被拒绝
+
+### 手动 supersede
+
+`POST /api/documents/{id}/supersede` 手动建立替代关系：
+1. 校验旧文档 `lifecycleStatus == ACTIVE`
+2. 校验新旧文档属于同一知识库
+3. `oldDoc.supersedeBy(newDoc, effectiveTo)`
+4. 标记索引 `STALE`，创建刷新任务
+5. 写审计日志 `SUPERSEDED`
+
+### retire / reactivate
+
+`POST /api/documents/{id}/retire`：
+- `document.retire()` → `lifecycleStatus = RETIRED`
+- 标记索引 `STALE`，创建刷新任务
+- 写审计日志 `RETIRED`
+
+`POST /api/documents/{id}/reactivate`：
+- `document.reactivate()` → `lifecycleStatus = ACTIVE`，清除 `effectiveTo`
+- 标记索引 `STALE`，创建刷新任务
+- 写审计日志 `REACTIVATED`
+
+### 强制 reindex
+
+`POST /api/documents/{id}/reindex`：
+- 手动触发索引刷新
+- `metadataVersion++`，标记 `STALE`
+- 创建刷新任务
+- 写审计日志 `INDEX_REFRESH_REQUESTED`
+
+用于 `FAILED` 状态恢复或人工干预。
+
+### 索引刷新任务
+
+```java
+public class DocumentIndexRefreshJob {
+    private String id;
+    private DocumentId documentId;
+    private KnowledgeBaseId knowledgeBaseId;
+    private long metadataVersion;  // 触发时的 metadata 版本
+    private DocumentIndexRefreshJobStatus status;  // PENDING/RUNNING/SUCCEEDED/FAILED
+    private int attempts;
+    private String failureReason;
+    private Instant nextRunAt;
+}
+```
+
+Worker 调度：
+1. claim 一个 `PENDING` job
+2. 读取 Document，若 `metadataVersion != job.metadataVersion` 则跳过（旧 job）
+3. `document.markIndexRefreshing()`
+4. 从 `documentChunkRepository` 读取持久化 chunks
+5. 重新生成 embeddings
+6. `vectorStorePort.store()` 写入 Milvus（旧行保留）
+7. `chunkSearchIndexPort.refreshStore()` 安全刷新 Mongo BM25
+8. `document.markIndexSynced()`，`indexedMetadataVersion = metadataVersion`
+9. job 标记 `SUCCEEDED`
+10. 失败时：`document.markIndexFailed(reason)`，job 标记 `FAILED` 并设置重试时间
+
+### 审计事件
+
+`GET /api/documents/{id}/audit-events` 返回：
+
+```java
+public record AuditEvent(
+    String id,
+    String documentId,
+    String knowledgeBaseId,
+    String actorUserId,
+    String action,              // METADATA_UPDATED, SUPERSEDED, RETIRED, REACTIVATED, INDEX_REFRESH_REQUESTED
+    String beforeSnapshot,      // JSON
+    String afterSnapshot,       // JSON
+    String reason,
+    Instant createdAt
+) {}
+```
+
+### 版本链查询
+
+`GET /api/documents/{id}/version-chain` 基于 `supersedesDocumentId` 构建完整替代链：
+- 向前追踪：被谁替代
+- 向后查找：替代了谁
 
 ## 检索过滤链路
 
@@ -212,7 +349,7 @@ Criteria criteria = Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value()
     ));
 ```
 
-#### 第三层：Application 兜底过滤
+#### 第三层：Application 兜底过滤（含 SYNCED 检查 + Mongo 权威 metadata 覆盖）
 
 ```java
 private List<ChunkReference> filterByDocumentEffectiveDate(
@@ -228,11 +365,35 @@ private List<ChunkReference> filterByDocumentEffectiveDate(
         .filter(ref -> {
             Document doc = documentMap.get(ref.documentId());
             if (doc == null) return true;
+            // 排除索引不同步的文档
+            if (doc.getIndexStatus() != DocumentIndexStatus.SYNCED) {
+                return false;
+            }
+            // 用 Mongo 权威 metadata 覆盖索引中的时效字段
             return doc.isEffectiveOn(asOfDate);
+        })
+        .map(ref -> {
+            Document doc = documentMap.get(ref.documentId());
+            if (doc == null) return ref;
+            return new ChunkReference(
+                ref.documentId(), ref.documentName(), ref.chunkIndex(), ref.chunkText(),
+                ref.score(), ref.startPosition(), ref.endPosition(),
+                doc.getCanonicalKey(), doc.getVersionLabel(),
+                doc.getEffectiveFrom(), doc.getEffectiveTo(),
+                doc.getLifecycleStatus(), doc.getAuthorityLevel(), doc.getJurisdiction()
+            );
         })
         .toList();
 }
 ```
+
+**为什么需要 SYNCED 检查？**
+
+治理操作（patch metadata、supersede、retire、reactivate）会修改 Mongo 中的 `Document` 状态，但索引刷新是异步的。在刷新完成前，Milvus/Mongo 索引中仍然保留旧 metadata。通过排除 `indexStatus != SYNCED` 的文档，避免返回基于旧索引的不准确结果。
+
+**为什么需要 Mongo 权威 metadata 覆盖？**
+
+即使索引已刷新，Milvus 中的旧行可能仍然存在（因为刷新策略是"写入新行，不 delete 旧行"）。用 Mongo `Document` 的真实状态覆盖 `ChunkReference` 中的时效字段，确保引用展示的 metadata 100% 准确。
 
 ### 完整检索 pipeline
 
@@ -243,7 +404,7 @@ private List<ChunkReference> filterByDocumentEffectiveDate(
     ↓
 mergeAndRerank（加权融合分数 [0, 1]）
     ↓
-filterByDocumentEffectiveDate（Mongo Document 真实状态兜底）
+filterByDocumentEffectiveDate（Mongo Document 真实状态兜底 + SYNCED 检查 + 权威 metadata 覆盖）
     ↓
 deduplicateByCanonicalKey（同 canonicalKey 多版本去重）
     ↓
@@ -288,6 +449,70 @@ private List<ChunkReference> deduplicateByCanonicalKey(List<ChunkReference> rank
 - `authorityLevel` 高者优先（适用于不同层级法规的冲突）
 - 同等级时，`effectiveFrom` 更新者优先（新法规替代旧法规）
 
+**为什么必须在 topK 截断前去重？**
+
+如果先 `limit(topK)` 再去重，可能把高优先级的版本截掉，留下低优先级版本。先去重再截断，保证最终返回的是最优版本集合。
+
+## 索引一致性策略
+
+### 核心不变量
+
+> **Mongo `Document` 是权威状态源，Milvus/Mongo chunk index 是派生索引。**
+
+所有治理操作只修改 Mongo 中的 `Document` 状态，不直接修改索引。索引通过异步刷新任务与 Mongo 状态保持一致。
+
+### 索引刷新流程
+
+```
+governance operation (patch/supersede/retire/reactivate/reindex)
+    ↓
+Document.markIndexStale() → metadataVersion++
+    ↓
+DocumentRepository.save(document)
+    ↓
+DocumentIndexRefreshJobRepository.save(job)
+    ↓
+Worker.claimJob() → runIndexRefreshTask()
+    ↓
+1. markIndexRefreshing()
+2. read persistent chunks from document_chunk_repository
+3. regenerate embeddings
+4. vectorStorePort.store() → Milvus (write new rows, keep old rows)
+5. chunkSearchIndexPort.refreshStore() → Mongo BM25 (safe two-phase refresh)
+6. markIndexSynced() → indexedMetadataVersion = metadataVersion
+```
+
+### Milvus 刷新策略
+
+- **写入新行**：`vectorStorePort.store()` 为每个 chunk 生成新的 embedding 记录
+- **不 delete 旧行**：旧行仍然存在于 collection 中
+- **兜底过滤**：`filterByDocumentEffectiveDate()` 排除 `indexStatus != SYNCED` 的文档
+- **权威覆盖**：即使命中了旧行，也用 Mongo `Document` 的真实 metadata 覆盖 `ChunkReference`
+
+**为什么保留旧行？**
+
+避免"delete 旧行 → 写入新行失败 → 索引完全丢失"的风险。旧行在检索阶段被 SYNCED 检查排除，不会污染结果。
+
+**未来优化**：引入 generation/alias 机制或后台物理清理任务，定期清理旧行。
+
+### Mongo BM25 安全刷新
+
+`ChunkSearchIndexPort.refreshStore()` 实现两阶段写入：
+
+1. **记录旧数据**：读取现有的 `ChunkIndexDocument` 列表（用于 corpus stats diff）
+2. **识别 orphaned chunks**：新 chunks 中不再存在的旧 chunk index
+3. **写入新 chunk index**：`saveAll` 覆盖同 ID 的记录
+4. **删除 orphaned chunks**：`repository.deleteById()` 物理删除
+5. **准备新 postings**：基于新 chunk index 生成
+6. **获取旧 postings 的 _id 集合**
+7. **保存新 postings**：`mongoTemplate.save()` upsert 覆盖同 ID
+8. **按 _id 差集删除旧 postings**：精确删除不再存在的 posting，不依赖 token 集合
+9. **更新 corpus stats**：diff = newTotal - oldTotal
+
+**为什么不用 token 集合删除？**
+
+如果旧 token 仍在新文档的其他 chunk 中出现，按 token 删除会误删新 chunk 的 posting。按 `_id` 差集删除精确到每个 posting，不会误删或漏删。
+
 ## API 使用示例
 
 ### 上传带时效元数据的文档
@@ -303,6 +528,66 @@ curl -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/documents" \
   -F "sourceType=LEGAL" \
   -F "authorityLevel=10" \
   -F "jurisdiction=全国"
+```
+
+### v2: 在线修改 metadata
+
+```bash
+curl -X PUT "http://localhost:8082/api/documents/{id}/metadata" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "canonicalKey": "reg-x-updated",
+    "versionLabel": "2024 修订版",
+    "effectiveTo": "2025-06-01",
+    "authorityLevel": 15
+  }'
+```
+
+修改后 `indexStatus` 变为 `STALE`，后台自动刷新索引。
+
+### v2: 手动 supersede
+
+```bash
+curl -X POST "http://localhost:8082/api/documents/{oldId}/supersede" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "newDocumentId": "new-doc-id",
+    "effectiveTo": "2025-01-01"
+  }'
+```
+
+### v2: 废止文档
+
+```bash
+curl -X POST "http://localhost:8082/api/documents/{id}/retire" \
+  -H "Content-Type: application/json" \
+  -H "synapse-token: xxx" \
+  -d '{
+    "effectiveTo": "2025-01-01"
+  }'
+```
+
+### v2: 强制重新索引
+
+```bash
+curl -X POST "http://localhost:8082/api/documents/{id}/reindex" \
+  -H "synapse-token: xxx"
+```
+
+### v2: 查询审计事件
+
+```bash
+curl "http://localhost:8082/api/documents/{id}/audit-events" \
+  -H "synapse-token: xxx"
+```
+
+### v2: 查询版本链
+
+```bash
+curl "http://localhost:8082/api/documents/{id}/version-chain" \
+  -H "synapse-token: xxx"
 ```
 
 ### 查询特定日期的适用资料
@@ -328,15 +613,7 @@ curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" 
 
 系统会自动解析出 `2024-12-31` 作为 `asOfDate`。
 
-## 边界和 v1 限制
-
-### v1 限制
-
-- **不支持在线修改已完成文档的 metadata**：`PUT /api/documents/{id}/metadata` 返回 `DomainException`
-- **不支持手动在线 supersede**：`POST /api/documents/{id}/supersede` 返回 `DomainException`
-- **Milvus/Mongo 不支持在线 metadata 更新**：`updateDocumentMetadata()` 均抛出 `UnsupportedOperationException`
-
-**正确做法**：重新上传新版本，并在上传时指定 `supersedesDocumentId`。
+## 边界和约束
 
 ### 存量数据迁移
 
@@ -350,3 +627,6 @@ curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" 
 - 不允许为了在线更新 metadata 对 Milvus 做无补偿 delete + reinsert
 - 时效过滤必须在 `mergeAndRerank` 后、`limit(topK)` 前执行
 - 禁止只用时间衰减/重排替代有效期硬过滤
+- `sourceType` 和 `effectiveFrom` 不允许清空
+- 删除文档时必须同时清理索引刷新任务（`refreshJobRepository.deleteByDocumentId`）
+- 索引刷新失败不会自动回退 Mongo 状态；需要人工调用 `reindex` 或等待 Worker 重试

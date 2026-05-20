@@ -22,8 +22,9 @@ Synapse 是一个支持多知识库隔离、用户鉴权、流式问答和资料
 - **Sa-Token 鉴权与 RBAC** — 默认 `ADMIN` / `USER` 角色，权限粒度为 `KB_READ`、`KB_WRITE`、`KB_DELETE`、`AUTH_ADMIN`
 - **知识库归属隔离** — `USER` 只能访问自己创建的知识库，`ADMIN` 可跨用户管理
 - **异步文档摄入** — 上传成功立即返回 `PENDING` 文档，后台执行 `PROCESSING -> COMPLETED/FAILED`
-- **资料时效性治理** — 文档携带 `effectiveFrom`、`effectiveTo`、`lifecycleStatus` 和 `canonicalKey`，检索时按 `asOfDate` 硬过滤
-- **法规/政策多版本管理** — 同一 `canonicalKey` 可存在多个版本，新版本通过 `supersedesDocumentId` 自动替代旧版本
+- **资料时效性治理 v1** — 文档携带 `effectiveFrom`、`effectiveTo`、`lifecycleStatus` 和 `canonicalKey`，检索时按 `asOfDate` 硬过滤
+- **资料时效性治理 v2** — 在线 metadata patch、手动 supersede/retire/reactivate、强制 reindex、索引状态追踪、审计事件、版本链查询
+- **法规/政策多版本管理** — 同一 `canonicalKey` 可存在多个版本，新版本通过 `supersedesDocumentId` 自动替代旧版本，也支持手动建立替代关系
 - **asOfDate 查询** — 支持显式指定查询日期，未传时默认当前日期并附带轻量时间意图解析
 - **Milvus v3 + Mongo BM25 双侧时效过滤** — 向量检索和关键词检索均按 `knowledgeBaseId + effectiveFromEpochDay + effectiveToEpochDay + lifecycleStatus` 做硬过滤
 - **引用带版本和生效期** — SSE 返回的 `ChunkReferenceResponse` 包含 `versionLabel`、`effectiveFrom`、`effectiveTo`、`lifecycleStatus`、`authorityLevel`
@@ -200,10 +201,15 @@ milvus:
 | GET | `/api/knowledge-bases` | 列出可访问知识库（`KB_READ`） |
 | DELETE | `/api/knowledge-bases/{id}` | 删除知识库（`KB_DELETE`） |
 | POST | `/api/knowledge-bases/{kbId}/documents` | 上传文档，支持 metadata 参数（`KB_WRITE`） |
-| GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档（`KB_READ`） |
+| GET | `/api/knowledge-bases/{kbId}/documents` | 列出文档，支持筛选（`KB_READ`） |
 | DELETE | `/api/documents/{id}` | 删除文档（`KB_DELETE`） |
-| PUT | `/api/documents/{id}/metadata` | v1 不支持在线修改（返回错误） |
-| POST | `/api/documents/{id}/supersede` | v1 不支持手动替代（返回错误） |
+| PUT | `/api/documents/{id}/metadata` | 在线修改 metadata（`KB_WRITE`） |
+| POST | `/api/documents/{id}/supersede` | 手动替代旧文档（`KB_WRITE`） |
+| POST | `/api/documents/{id}/retire` | 废止文档（`KB_WRITE`） |
+| POST | `/api/documents/{id}/reactivate` | 重新启用文档（`KB_WRITE`） |
+| POST | `/api/documents/{id}/reindex` | 强制重建索引（`KB_WRITE`） |
+| GET | `/api/documents/{id}/version-chain` | 查询版本链（`KB_READ`） |
+| GET | `/api/documents/{id}/audit-events` | 查询审计事件（`KB_READ`） |
 | GET | `/api/knowledge-bases/{kbId}/chat/sessions/current` | 获取当前聊天会话（`KB_READ`） |
 | POST | `/api/knowledge-bases/{kbId}/chat/sessions` | 新建聊天会话（`KB_READ`） |
 | GET | `/api/chat/sessions/{sessionId}/messages` | 分页读取聊天记录（仅当前用户） |
@@ -218,16 +224,16 @@ milvus:
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | file | File | 是 | 文档文件 |
-| sourceType | string | 否 | `LEGAL`、`POLICY`、`GENERAL` |
+| sourceType | string | 否 | `LEGAL`、`POLICY`、`GENERAL`，默认 `GENERAL` |
 | canonicalKey | string | 否 | 规范标识，用于同一资料的多版本关联 |
 | versionLabel | string | 否 | 版本标签，如 "2024 版" |
-| effectiveFrom | string | 否 | 生效日期，格式 `YYYY-MM-DD` |
+| effectiveFrom | string | 否 | 生效日期，格式 `YYYY-MM-DD`，默认上传日期 |
 | effectiveTo | string | 否 | 排他结束日期，格式 `YYYY-MM-DD` |
 | supersedesDocumentId | string | 否 | 被替代的旧文档 ID |
-| authorityLevel | int | 否 | 权威等级，数值越高优先级越高 |
+| authorityLevel | int | 否 | 权威等级，数值越高优先级越高，默认 0 |
 | jurisdiction | string | 否 | 适用区域/管辖范围 |
 
-`DocumentResponse` 返回字段包含上述所有时效字段，以及 `status`（`PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`）和 `lifecycleStatus`（`ACTIVE`/`SUPERSEDED`/`RETIRED`）。
+`DocumentResponse` 返回字段包含上述所有时效字段，以及 `status`（`PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`）、`lifecycleStatus`（`ACTIVE`/`SUPERSEDED`/`RETIRED`）、`indexStatus`（`SYNCED`/`STALE`/`REFRESHING`/`FAILED`）、`metadataVersion`、`indexedMetadataVersion`、`lastIndexRefreshAt`、`lastIndexFailureReason`。
 
 ### 流式问答与 asOfDate
 
@@ -325,6 +331,7 @@ curl -N -X POST "http://localhost:8082/api/knowledge-bases/{kbId}/query/stream" 
 - [流式问答 API](docs/reference/api/streaming-query.mdx)
 - [配置参考](docs/reference/api/streaming-query.mdx)
 - [混合检索设计](docs/design/hybrid-retrieval.mdx)
+- [资料时效性治理](docs/design/temporal-validity.mdx)
 - [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md)
 
 ## 许可证

@@ -90,23 +90,41 @@ public class DocumentController {
 | `authorityLevel` | int | 否 | 权威等级，数值越高优先级越高 |
 | `jurisdiction` | string | 否 | 适用区域/管辖范围 |
 
-### v1 不支持的接口
+### v2 治理接口
 
 ```java
 @PutMapping("/api/documents/{id}/metadata")
-public Mono<DocumentResponse> updateMetadata(...) {
+public Mono<DocumentResponse> updateMetadata(@PathVariable String id,
+                                              @RequestBody PatchDocumentMetadataRequest request) {
     // 调用 UpdateDocumentMetadataUseCase.updateMetadata()
-    // v1 返回 DomainException：不支持在线修改
+    // PatchValue 语义：不传 = unset，传值 = set，传 null = clear
 }
 
 @PostMapping("/api/documents/{id}/supersede")
-public Mono<Void> supersede(...) {
+public Mono<Void> supersede(@PathVariable String id,
+                            @RequestBody SupersedeDocumentRequest request) {
     // 调用 SupersedeDocumentUseCase.supersede()
-    // v1 返回 DomainException：不支持在线替代
+    // 旧文档必须是 ACTIVE，新旧文档必须属于同一知识库
 }
+
+@PostMapping("/api/documents/{id}/retire")
+public Mono<DocumentResponse> retire(@PathVariable String id,
+                                     @RequestBody RetireDocumentRequest request) { ... }
+
+@PostMapping("/api/documents/{id}/reactivate")
+public Mono<DocumentResponse> reactivate(@PathVariable String id) { ... }
+
+@PostMapping("/api/documents/{id}/reindex")
+public Mono<DocumentResponse> reindex(@PathVariable String id) { ... }
+
+@GetMapping("/api/documents/{id}/version-chain")
+public Mono<List<DocumentVersionChainResponse>> getVersionChain(@PathVariable String id) { ... }
+
+@GetMapping("/api/documents/{id}/audit-events")
+public Mono<List<DocumentAuditEventResponse>> getAuditEvents(@PathVariable String id) { ... }
 ```
 
-这两个接口在 v1 中保留但返回不支持。正确的资料时效变更必须通过重新上传新版本并指定 `supersedesDocumentId` 完成。
+所有治理操作都会将 `indexStatus` 标记为 `STALE`，由后台 `DocumentIndexRefreshJobWorker` 异步刷新索引。刷新完成后 `indexStatus` 变为 `SYNCED`。
 
 ### 文件校验
 

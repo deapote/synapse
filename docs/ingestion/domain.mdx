@@ -1,6 +1,6 @@
 ---
 title: Domain 层
-description: Document 实体、状态机、时效元数据、IngestionJob、RecursiveChunkingStrategy
+description: Document 实体、状态机、时效元数据、索引同步状态、IngestionJob、RecursiveChunkingStrategy
 ---
 
 # 文档上传与摄入 —— Domain 层
@@ -35,6 +35,13 @@ public class Document {
     private String supersedesDocumentId;
     private int authorityLevel;
     private String jurisdiction;
+
+    // v2: 索引同步状态
+    private long metadataVersion;
+    private long indexedMetadataVersion;
+    private DocumentIndexStatus indexStatus;
+    private Instant lastIndexRefreshAt;
+    private String lastIndexFailureReason;
 }
 ```
 
@@ -77,6 +84,29 @@ public enum DocumentLifecycleStatus {
 - `DocumentLifecycleStatus` 管**业务时效**（这份资料在当前查询时间点是否有效）。
 - 一个 `COMPLETED` 的文档可以是 `ACTIVE`，也可以是 `SUPERSEDED` 或 `RETIRED`。
 - 一个 `FAILED` 的文档没有检索价值，其 `lifecycleStatus` 理论上不影响检索（因为 `FAILED` 不会写入索引）。
+
+### DocumentIndexStatus —— 索引同步状态（v2）
+
+文件：`synapse-kb-domain/.../model/DocumentIndexStatus.java`
+
+```java
+public enum DocumentIndexStatus {
+    SYNCED,      // 索引与 Mongo 权威状态一致
+    STALE,       // Mongo 状态已变，索引待刷新
+    REFRESHING,  // 索引刷新任务正在执行
+    FAILED       // 索引刷新失败
+}
+```
+
+`DocumentIndexStatus` 独立于摄入状态机和业务时效状态。所有治理操作（patch metadata、supersede、retire、reactivate、reindex）都会将 `indexStatus` 设为 `STALE`，由后台 Worker 异步刷新。
+
+### metadataVersion / indexedMetadataVersion（v2）
+
+- `metadataVersion`：每次 metadata 变更（patch、supersede、retire、reactivate、reindex）时递增
+- `indexedMetadataVersion`：当前索引成功刷新时对应的 `metadataVersion`
+- 当 `metadataVersion > indexedMetadataVersion` 时，`indexStatus` 应为 `STALE` 或 `REFRESHING`
+
+Worker 在 claim job 后会检查 `document.getMetadataVersion() == job.getMetadataVersion()`，不匹配则跳过旧 job。
 
 ### DocumentMetadata —— 时效元数据值对象
 
@@ -124,6 +154,77 @@ public boolean isEffectiveOn(LocalDate date) {
 }
 ```
 
+### patchMetadata() —— v2 在线编辑
+
+```java
+public void patchMetadata(PatchDocumentMetadata patch) {
+    if (patch == null) return;
+
+    // 1. 计算所有候选值
+    DocumentSourceType candidateSourceType = this.sourceType;
+    String candidateCanonicalKey = this.canonicalKey;
+    // ...
+
+    if (patch.sourceType().isPresent()) {
+        if (patch.sourceType().isClear()) {
+            throw new DomainException("资料类型不允许清空");
+        }
+        candidateSourceType = patch.sourceType().value();
+    }
+    if (patch.effectiveFrom().isPresent()) {
+        if (patch.effectiveFrom().isClear()) {
+            throw new DomainException("生效日期不允许清空");
+        }
+        candidateEffectiveFrom = patch.effectiveFrom().value();
+    }
+    // ...
+
+    // 2. 统一校验
+    if (candidateEffectiveFrom != null && candidateEffectiveTo != null
+            && !candidateEffectiveTo.isAfter(candidateEffectiveFrom)) {
+        throw new DomainException("失效日期必须晚于生效日期");
+    }
+    if (candidateAuthorityLevel != null && candidateAuthorityLevel < 0) {
+        throw new DomainException("权威等级不能为负数");
+    }
+    if (candidateSourceType == null) {
+        throw new DomainException("资料类型不能为空");
+    }
+
+    // 3. 原子赋值
+    this.sourceType = candidateSourceType;
+    // ...
+}
+```
+
+**关键设计**：先计算所有候选值，校验全部通过后再统一赋值。避免部分字段已修改、部分校验失败的中间状态。
+
+### markIndexStale() / markIndexRefreshing() / markIndexSynced() / markIndexFailed()
+
+```java
+public void markIndexStale() {
+    this.indexStatus = DocumentIndexStatus.STALE;
+    this.metadataVersion++;
+}
+
+public void markIndexRefreshing() {
+    this.indexStatus = DocumentIndexStatus.REFRESHING;
+    this.lastIndexFailureReason = null;
+}
+
+public void markIndexSynced() {
+    this.indexStatus = DocumentIndexStatus.SYNCED;
+    this.indexedMetadataVersion = this.metadataVersion;
+    this.lastIndexRefreshAt = Instant.now();
+    this.lastIndexFailureReason = null;
+}
+
+public void markIndexFailed(String reason) {
+    this.indexStatus = DocumentIndexStatus.FAILED;
+    this.lastIndexFailureReason = reason;
+}
+```
+
 ### supersedeBy() —— 版本替代
 
 ```java
@@ -143,6 +244,22 @@ public void supersedeBy(Document newDocument, LocalDate effectiveTo) {
 ```
 
 **业务语义**：旧文档被新版本替代时，旧文档的 `effectiveTo` 被设为新版本的 `effectiveFrom`，`lifecycleStatus` 变为 `SUPERSEDED`。旧文档本身不删除，索引中的 scalar 字段保持不变（检索时由 application 层用 `isEffectiveOn()` 兜底过滤）。
+
+### retire() / reactivate() —— v2
+
+```java
+public void retire(LocalDate effectiveTo) {
+    if (effectiveTo != null) {
+        this.effectiveTo = effectiveTo;
+    }
+    this.lifecycleStatus = DocumentLifecycleStatus.RETIRED;
+}
+
+public void reactivate() {
+    this.lifecycleStatus = DocumentLifecycleStatus.ACTIVE;
+    this.effectiveTo = null;
+}
+```
 
 ### create() 工厂方法
 
@@ -175,7 +292,72 @@ public enum DocumentSourceType {
 }
 ```
 
-`sourceType` 和 `jurisdiction` 可作为检索时的扩展过滤字段（v1 中已保留在索引 schema 中，供后续扩展）。
+`sourceType` 和 `jurisdiction` 可作为检索时的扩展过滤字段（v2 中已在列表筛选和检索过滤中启用）。
+
+## PatchValue<T> —— v2 三态值对象
+
+文件：`synapse-kb-domain/.../model/PatchValue.java`
+
+```java
+public final class PatchValue<T> {
+    public static <T> PatchValue<T> unset() { ... }
+    public static <T> PatchValue<T> set(T value) { ... }
+    public static <T> PatchValue<T> clear() { ... }
+
+    public boolean isPresent() { ... }
+    public boolean isClear() { ... }
+    public T value() { ... }
+}
+```
+
+用于在线 metadata 编辑，区分三种语义：
+- `unset()` —— 不传该字段，不修改
+- `set(T)` —— 覆盖为新值
+- `clear()` —— 显式清空该字段（`sourceType` 和 `effectiveFrom` 不允许 `clear`）
+
+## PatchDocumentMetadata —— v2 在线编辑值对象
+
+文件：`synapse-kb-domain/.../model/PatchDocumentMetadata.java`
+
+```java
+public record PatchDocumentMetadata(
+    PatchValue<DocumentSourceType> sourceType,
+    PatchValue<String> canonicalKey,
+    PatchValue<String> versionLabel,
+    PatchValue<LocalDate> effectiveFrom,
+    PatchValue<LocalDate> effectiveTo,
+    PatchValue<Integer> authorityLevel,
+    PatchValue<String> jurisdiction
+) {}
+```
+
+## DocumentIndexRefreshJob —— v2 索引刷新任务
+
+文件：`synapse-kb-domain/.../model/DocumentIndexRefreshJob.java`
+
+```java
+public class DocumentIndexRefreshJob {
+    private final DocumentIndexRefreshJobId id;
+    private final DocumentId documentId;
+    private final KnowledgeBaseId knowledgeBaseId;
+    private final long metadataVersion;  // 触发时的 metadata 版本
+    private DocumentIndexRefreshJobStatus status;
+    private int attempts;
+    private String failureReason;
+    private Instant nextRunAt;
+    private String leaseOwner;
+    private Instant leaseExpiresAt;
+    private final Instant createdAt;
+    private Instant updatedAt;
+}
+```
+
+状态机：
+```
+PENDING → RUNNING → SUCCEEDED
+              ↓
+           FAILED → PENDING（重试）
+```
 
 ## IngestionJob —— 摄入任务
 
@@ -273,3 +455,17 @@ public class RecursiveChunkingStrategy {
 ```
 
 如果句子跨越两个块的边界，没有重叠的话这个句子会被切断，语义丢失。重叠窗口（默认 15%）保证每个块的开头包含上一个块结尾的部分内容，减少信息损失。
+
+### 持久化分块（v2）
+
+文件：`synapse-kb-domain/.../repository/DocumentChunkRepository.java`
+
+```java
+public interface DocumentChunkRepository {
+    void save(DocumentId documentId, List<DocumentChunk> chunks);
+    List<DocumentChunk> findByDocumentId(DocumentId documentId);
+    void deleteByDocumentId(DocumentId documentId);
+}
+```
+
+摄入完成后，chunks 被持久化到 Mongo `document_chunks` 集合。索引刷新时不需要重新解析原文档，直接从持久化 chunks 重建索引。这是两阶段索引刷新的基础。

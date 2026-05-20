@@ -1,6 +1,6 @@
 ---
 title: Application 层
-description: 用例编排、摄入流程、时效元数据处理、失败处理
+description: 用例编排、摄入流程、时效元数据处理、在线治理、失败处理
 ---
 
 # 文档上传与摄入 —— Application 层
@@ -142,10 +142,13 @@ private void processDocument(Document document, String contentObjectId) {
         // 2. 存储索引（携带 metadata）
         storeDocumentIndexes(document, chunks);
 
+        // 3. 持久化 chunks（v2，用于索引刷新时重建）
+        documentChunkRepository.save(document.getId(), chunks);
+
         document.setChunkCount(chunks.size());
         document.transitionTo(COMPLETED);
 
-        // 3. 新文档摄入成功后，再执行版本替代
+        // 4. 新文档摄入成功后，再执行版本替代
         if (document.getSupersedesDocumentId() != null
                 && !document.getSupersedesDocumentId().isBlank()) {
             supersedeOldDocument(document);
@@ -218,7 +221,154 @@ private void storeDocumentIndexes(Document document, List<DocumentChunk> chunks)
 
 **双写索引**：向量索引和关键词索引必须同时成功，且都携带 `DocumentMetadata`。如果其中一个失败，`cleanupDocumentIndexesQuietly()` 会清理已写入的数据。
 
+## 在线治理 UseCase（v2）
+
+### UpdateDocumentMetadataUseCase
+
+```java
+public interface UpdateDocumentMetadataUseCase {
+    Document updateMetadata(DocumentId id, PatchDocumentMetadata patch);
+}
+```
+
+实现流程：
+1. 校验 `KB_WRITE`
+2. 读取 Document
+3. `document.patchMetadata(patch)` —— 原子校验和赋值
+4. `document.markIndexStale()`，`metadataVersion++`
+5. `documentRepository.save(document)`
+6. 创建 `DocumentIndexRefreshJob`
+7. 写审计日志 `METADATA_UPDATED`
+
+### SupersedeDocumentUseCase
+
+```java
+public interface SupersedeDocumentUseCase {
+    void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo);
+}
+```
+
+实现流程：
+1. 校验 `KB_WRITE`
+2. 读取 oldDoc 和 newDoc
+3. 校验同一知识库、oldDoc 为 `ACTIVE`、newDoc 为 `COMPLETED`
+4. `oldDoc.supersedeBy(newDoc, effectiveTo)`
+5. `oldDoc.markIndexStale()`
+6. 保存、创建刷新任务、写审计 `SUPERSEDED`
+
+### RetireDocumentUseCase / ReactivateDocumentUseCase
+
+```java
+public interface RetireDocumentUseCase {
+    Document retire(DocumentId id, LocalDate effectiveTo);
+}
+
+public interface ReactivateDocumentUseCase {
+    Document reactivate(DocumentId id);
+}
+```
+
+### ReindexDocumentUseCase
+
+```java
+public interface ReindexDocumentUseCase {
+    Document reindex(DocumentId id);
+}
+```
+
+强制触发索引刷新：
+1. 校验 `KB_WRITE`
+2. `document.markIndexStale()`，`metadataVersion++`
+3. 保存、创建刷新任务、写审计 `INDEX_REFRESH_REQUESTED`
+
+### GetDocumentVersionChainUseCase
+
+```java
+public interface GetDocumentVersionChainUseCase {
+    List<Document> getVersionChain(DocumentId id);
+}
+```
+
+基于 `supersedesDocumentId` 构建完整替代链：
+- 向前追踪：被谁替代
+- 向后查找：替代了谁
+
+### GetDocumentAuditEventsUseCase
+
+```java
+public interface GetDocumentAuditEventsUseCase {
+    List<AuditEvent> getAuditEvents(DocumentId id);
+}
+```
+
+## 索引刷新任务
+
+### DocumentIndexRefreshJob 实体
+
+```java
+public class DocumentIndexRefreshJob {
+    private DocumentIndexRefreshJobId id;
+    private DocumentId documentId;
+    private KnowledgeBaseId knowledgeBaseId;
+    private long metadataVersion;
+    private DocumentIndexRefreshJobStatus status;
+    private int attempts;
+    private String failureReason;
+    private Instant nextRunAt;
+    private Instant createdAt;
+    private Instant updatedAt;
+}
+```
+
+### 刷新 Worker 流程
+
+```java
+private void runIndexRefreshTask(DocumentIndexRefreshJob job) {
+    Document document = documentRepository.findById(job.getDocumentId()).orElse(null);
+    if (document == null) { /* ... */ return; }
+
+    if (document.getMetadataVersion() != job.getMetadataVersion()) {
+        // 旧 job，安全跳过
+        job.markSucceeded();
+        refreshJobRepository.save(job);
+        return;
+    }
+
+    try {
+        document.markIndexRefreshing();
+        documentRepository.save(document);
+
+        List<DocumentChunk> chunks = documentChunkRepository.findByDocumentId(document.getId());
+        if (chunks.isEmpty()) { throw new DomainException("文档分块不存在"); }
+
+        List<float[]> embeddings = embeddingPort.embed(
+            chunks.stream().map(DocumentChunk::text).toList()
+        );
+
+        DocumentMetadata metadata = toMetadata(document);
+
+        // Milvus：写入新行，旧行保留
+        vectorStorePort.store(...);
+
+        // Mongo BM25：两阶段安全刷新
+        chunkSearchIndexPort.refreshStore(...);
+
+        document.markIndexSynced();
+        documentRepository.save(document);
+        job.markSucceeded();
+        refreshJobRepository.save(job);
+    } catch (Exception e) {
+        document.markIndexFailed(safeFailureReason(e));
+        documentRepository.save(document);
+        job.markFailed(reason, Instant.now().plus(Duration.ofMinutes(1)));
+        refreshJobRepository.save(job);
+    }
+}
+```
+
 ## 失败处理
+
+### 摄入失败
 
 ```java
 private void handleIngestionFailure(IngestionJob job, Document document, Exception e) {
@@ -238,21 +388,11 @@ private void handleIngestionFailure(IngestionJob job, Document document, Excepti
 - 第1次失败后：30 秒后重试
 - 第2次失败后：2 分钟后重试
 
-## v1 限制
+### 索引刷新失败
 
-```java
-@Override
-public Document updateMetadata(DocumentId id, DocumentMetadata metadata) {
-    throw new DomainException("v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更");
-}
-
-@Override
-public void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo) {
-    throw new DomainException("v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更");
-}
-```
-
-v1 不支持在线修改已完成文档的 metadata，也不支持手动在线 supersede。正确的资料时效变更必须通过重新上传新版本完成。
+索引刷新失败不会自动回退 Mongo 状态。`Document.indexStatus` 变为 `FAILED`，`lastIndexFailureReason` 记录失败原因。恢复方式：
+1. 人工调用 `POST /api/documents/{id}/reindex` 强制重试
+2. 等待 Worker 按 `nextRunAt` 自动重试（指数退避）
 
 ## 出站端口
 
@@ -264,4 +404,7 @@ v1 不支持在线修改已完成文档的 metadata，也不支持手动在线 s
 | `VectorStorePort` | 向量存储和检索（v3 collection） |
 | `ChunkSearchIndexPort` | 关键词索引存储和检索 |
 | `IngestionJobRepository` | 摄入任务仓储 |
+| `DocumentChunkRepository` | 分块持久化（v2，用于索引刷新） |
+| `DocumentIndexRefreshJobRepository` | 索引刷新任务仓储（v2） |
+| `AuditEventStorePort` | 审计事件持久化（v2） |
 | `AccessControlPort` | 权限检查 |

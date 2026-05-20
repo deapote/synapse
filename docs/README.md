@@ -35,11 +35,11 @@
 
 - Domain/Application 保持同步 API，WebFlux 只在 adapter-in 边界。
 - `auth` 与 `kb` 是并列 bounded context，`kb` 通过 `AccessControlPort` 依赖权限能力。
-- 文档摄入状态 `Document.status`（`PENDING → PROCESSING → COMPLETED/FAILED`）与业务时效状态 `DocumentLifecycleStatus`（`ACTIVE`、`SUPERSEDED`、`RETIRED`）严格分离。
-- 资料时效性治理采用 Milvus/Mongo 检索硬过滤 + application 真实文档状态兜底过滤的双层策略。
-- v1 不支持在线修改已完成文档的检索 metadata；`PUT /api/documents/{id}/metadata` 返回不支持。
-- v1 不支持手动在线 supersede；`POST /api/documents/{id}/supersede` 返回不支持。
-- 新版本替代旧版本必须通过重新上传并指定 `supersedesDocumentId`。
+- 文档摄入状态 `Document.status`（`PENDING → PROCESSING → COMPLETED/FAILED`）、业务时效状态 `DocumentLifecycleStatus`（`ACTIVE`、`SUPERSEDED`、`RETIRED`）、索引同步状态 `DocumentIndexStatus`（`SYNCED`、`STALE`、`REFRESHING`、`FAILED`）三者严格分离。
+- 资料时效性治理采用 Milvus/Mongo 检索硬过滤 + Application 层 `filterByDocumentEffectiveDate` 兜底过滤的双层策略。
+- 在线 metadata 编辑使用 `PatchValue<T>` 三态语义（`unset`/`set`/`clear`），`sourceType` 和 `effectiveFrom` 不允许清空。
+- 所有治理操作（patch metadata、supersede、retire、reactivate、reindex）都会标记索引为 `STALE`，由后台 `DocumentIndexRefreshJobWorker` 异步刷新。
+- Mongo `Document` 是权威状态，Milvus/Mongo chunk index 是派生索引；索引刷新采用异步任务保证最终一致性。
 - `effectiveTo` 是排他结束日：`effectiveTo=2025-01-01` 表示 2025-01-01 当天起旧资料无效。
 - 旧 collection / 存量数据需要重新摄入或迁移到 v3，否则不能保证完整时效过滤。
 

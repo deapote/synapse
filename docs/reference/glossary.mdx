@@ -50,6 +50,12 @@ description: DDD、RAG、Spring、资料时效性术语速查
 | RetrievalFilter | Retrieval Filter | 检索过滤条件，含必填 `asOfDate` 和可选 `sourceType`/`jurisdiction` |
 | 时效硬过滤 | Temporal Hard Filter | 在检索阶段直接排除过期资料，不是重排加权 |
 | 兜底过滤 | Fallback Filter | Application 层用 Mongo `Document` 真实状态做的二次时效校验 |
+| PatchValue | Patch Value | 三态值对象：`unset()`（不传，不修改）、`set(T)`（覆盖）、`clear()`（显式清空） |
+| DocumentIndexStatus | Document Index Status | 索引同步状态：`SYNCED`（已同步）、`STALE`（待刷新）、`REFRESHING`（刷新中）、`FAILED`（失败） |
+| metadataVersion | Metadata Version | 每次 metadata 变更时递增的版本号，用于追踪索引一致性 |
+| DocumentIndexRefreshJob | Document Index Refresh Job | v2 索引刷新任务实体，由 Worker 异步执行 |
+| refreshStore | Refresh Store | 两阶段安全刷新：先写入新数据，再按 _id diffset 删除旧数据 |
+| 审计事件 | Audit Event | 记录 metadata 修改、supersede、retire、reactivate、reindex 等治理操作的日志 |
 
 ## Spring 术语
 

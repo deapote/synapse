@@ -40,8 +40,10 @@ synapse/
 ├── synapse-kb-application/            # 知识库应用层
 │   └── .../kb/port/
 │       ├── in/                        # IngestDocumentUseCase, QueryKnowledgeBaseUseCase
-│       │                              # UpdateDocumentMetadataUseCase (v1 不支持)
-│       │                              # SupersedeDocumentUseCase (v1 不支持)
+│       │                              # UpdateDocumentMetadataUseCase, SupersedeDocumentUseCase (v2)
+│       │                              # RetireDocumentUseCase, ReactivateDocumentUseCase (v2)
+│       │                              # ReindexDocumentUseCase, GetDocumentVersionChainUseCase (v2)
+│       │                              # GetDocumentAuditEventsUseCase (v2)
 │       ├── out/                       # VectorStorePort, ChunkSearchIndexPort, EmbeddingPort
 │       │                              # RetrievalFilter
 │       └── service/                   # KnowledgeBaseApplicationService
