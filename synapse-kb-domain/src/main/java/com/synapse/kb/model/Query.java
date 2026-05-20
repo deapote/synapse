@@ -9,7 +9,9 @@ public record Query(
         KnowledgeBaseId knowledgeBaseId,
         String text,
         String sessionId,
-        LocalDate asOfDate
+        LocalDate asOfDate,
+        DocumentSourceType sourceType,
+        String jurisdiction
 ) {
 
     public Query {
@@ -20,13 +22,14 @@ public record Query(
             throw new DomainException("查询文本不能为空");
         }
         sessionId = sessionId == null || sessionId.isBlank() ? null : sessionId.strip();
+        jurisdiction = jurisdiction == null || jurisdiction.isBlank() ? null : jurisdiction.strip();
     }
 
     public Query(KnowledgeBaseId knowledgeBaseId, String text) {
-        this(knowledgeBaseId, text, null, null);
+        this(knowledgeBaseId, text, null, null, null, null);
     }
 
     public Query(KnowledgeBaseId knowledgeBaseId, String text, String sessionId) {
-        this(knowledgeBaseId, text, sessionId, null);
+        this(knowledgeBaseId, text, sessionId, null, null, null);
     }
 }

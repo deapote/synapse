@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,10 +47,66 @@ class RagCitationContractTests {
         assertTrue(context.prompt().contains("finally 块中不要使用 return。"));
     }
 
+    @Test
+    void prepareUsesResolvedAsOfDateForMongoAuthorityFallbackWhenRequestDateIsAbsent() {
+        KnowledgeBase kb = KnowledgeBase.create("kb", "", "user-1");
+        Document document = Document.reconstruct(
+                new DocumentId("doc-1"),
+                kb.getId(),
+                "法规.pdf",
+                "application/pdf",
+                100,
+                "hash-1",
+                Instant.parse("2024-01-01T00:00:00Z"),
+                DocumentStatus.COMPLETED,
+                null,
+                1,
+                null,
+                null,
+                Instant.parse("2024-01-01T00:01:00Z"),
+                DocumentSourceType.LEGAL,
+                "law-x",
+                "2024版",
+                LocalDate.of(2024, 1, 1),
+                null,
+                DocumentLifecycleStatus.ACTIVE,
+                null,
+                10,
+                "全国",
+                0L,
+                0L,
+                DocumentIndexStatus.SYNCED,
+                Instant.parse("2024-01-01T00:02:00Z"),
+                null
+        );
+        List<ChunkReference> vectorResults = List.of(
+                new ChunkReference("doc-1", "法规.pdf", 0, "现行有效条款。", 0.92f, 0, 8)
+        );
+        KnowledgeBaseApplicationService service = newService(kb, vectorResults, new MapDocumentRepository(document));
+
+        RagContext context = service.prepare(new Query(
+                kb.getId(),
+                "查询法规条款",
+                null,
+                null,
+                DocumentSourceType.LEGAL,
+                "全国"
+        ));
+
+        assertEquals(1, context.references().size());
+        assertEquals("doc-1", context.references().getFirst().documentId());
+        assertTrue(context.prompt().contains("现行有效条款。"));
+    }
+
     private KnowledgeBaseApplicationService newService(KnowledgeBase kb, List<ChunkReference> vectorResults) {
+        return newService(kb, vectorResults, new EmptyDocumentRepository());
+    }
+
+    private KnowledgeBaseApplicationService newService(KnowledgeBase kb, List<ChunkReference> vectorResults,
+                                                       DocumentRepository documentRepository) {
         return new KnowledgeBaseApplicationService(
                 new SingleKnowledgeBaseRepository(kb),
-                new EmptyDocumentRepository(),
+                documentRepository,
                 new EmptyChatSessionRepository(),
                 new EmptyChatMessageRepository(),
                 (inputStream, fileName) -> "",
@@ -115,6 +173,21 @@ class RagCitationContractTests {
         @Override public List<Document> findByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) { return List.of(); }
         @Override public List<Document> findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(KnowledgeBaseId knowledgeBaseId, String canonicalKey, DocumentLifecycleStatus status) { return List.of(); }
         @Override public List<Document> findBySupersedesDocumentId(DocumentId documentId) { return List.of(); }
+    }
+
+    private static class MapDocumentRepository extends EmptyDocumentRepository {
+        private final Map<DocumentId, Document> documents = new HashMap<>();
+        private MapDocumentRepository(Document... documents) {
+            for (Document document : documents) {
+                this.documents.put(document.getId(), document);
+            }
+        }
+        @Override public Optional<Document> findById(DocumentId id) { return Optional.ofNullable(documents.get(id)); }
+        @Override public List<Document> findByKnowledgeBaseId(KnowledgeBaseId knowledgeBaseId) {
+            return documents.values().stream()
+                    .filter(document -> document.getKnowledgeBaseId().equals(knowledgeBaseId))
+                    .toList();
+        }
     }
 
     private static class EmptyChatSessionRepository implements ChatSessionRepository {

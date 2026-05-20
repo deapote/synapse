@@ -140,6 +140,8 @@ export interface QueryRequest {
   query: string
   sessionId?: string
   asOfDate?: string
+  sourceType?: DocumentSourceType
+  jurisdiction?: string
 }
 
 export interface ChunkReference {

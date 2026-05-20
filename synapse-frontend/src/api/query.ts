@@ -1,5 +1,5 @@
 import client from '@/api/client'
-import type { ChatMessageResponse, ChatSession, ChunkReference, CitationValidation } from '@/types'
+import type { ChatMessageResponse, ChatSession, ChunkReference, CitationValidation, DocumentSourceType } from '@/types'
 import { clearToken, getStoredToken } from '@/api/token'
 
 export interface StreamCallbacks {
@@ -36,12 +36,18 @@ export async function listChatMessages(sessionId: string, page = 0, size = 50): 
  *
  * @returns AbortController，用于取消流
  */
+export interface StreamQueryOptions {
+  sessionId?: string | null
+  asOfDate?: string | null
+  sourceType?: DocumentSourceType | null
+  jurisdiction?: string | null
+}
+
 export function streamQueryKnowledgeBase(
   knowledgeBaseId: string,
   query: string,
-  sessionId: string | null,
   callbacks: StreamCallbacks,
-  asOfDate?: string | null
+  options?: StreamQueryOptions
 ): AbortController {
   const ctrl = new AbortController()
   const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -54,8 +60,10 @@ export function streamQueryKnowledgeBase(
   }
 
   const body: Record<string, string> = { query }
-  if (sessionId) body.sessionId = sessionId
-  if (asOfDate) body.asOfDate = asOfDate
+  if (options?.sessionId) body.sessionId = options.sessionId
+  if (options?.asOfDate) body.asOfDate = options.asOfDate
+  if (options?.sourceType) body.sourceType = options.sourceType
+  if (options?.jurisdiction) body.jurisdiction = options.jurisdiction
 
   fetch(`${baseUrl}/knowledge-bases/${knowledgeBaseId}/query/stream`, {
     method: 'POST',

@@ -6,9 +6,11 @@ import com.synapse.kb.adapter.in.web.dto.CitationValidationResponse;
 import com.synapse.kb.adapter.in.web.dto.ChunkReferenceResponse;
 import com.synapse.kb.adapter.in.web.dto.QueryRequest;
 import com.synapse.kb.model.ChunkReference;
+import com.synapse.kb.model.DocumentSourceType;
 import com.synapse.kb.model.KnowledgeBaseId;
 import com.synapse.kb.model.Query;
 import com.synapse.kb.model.RagContext;
+import com.synapse.shared.exception.DomainException;
 import com.synapse.kb.port.in.QueryKnowledgeBaseUseCase;
 import com.synapse.kb.port.out.StreamingLlmPort;
 import io.micrometer.core.instrument.Counter;
@@ -69,14 +71,34 @@ public class StreamingQueryController {
             @PathVariable String kbId,
             @RequestBody QueryRequest request
     ) {
+        DocumentSourceType sourceType = parseSourceType(request.sourceType());
+        String jurisdiction = request.jurisdiction() == null || request.jurisdiction().isBlank()
+                ? null : request.jurisdiction().strip();
         return SaTokenReactorBridge.blockingCall(
-                        () -> queryUseCase.prepare(new Query(new KnowledgeBaseId(kbId), request.query(), request.sessionId(), request.asOfDate())))
+                        () -> queryUseCase.prepare(new Query(
+                                new KnowledgeBaseId(kbId),
+                                request.query(),
+                                request.sessionId(),
+                                request.asOfDate(),
+                                sourceType,
+                                jurisdiction)))
                 .flatMapMany(this::buildSseFlux)
                 .onErrorResume(e -> {
                     sseErrorCounter.increment();
                     log.error("流式问答失败", e);
                     return Flux.just(sseEvent("error", safeErrorPayload("流式问答失败")));
                 });
+    }
+
+    private DocumentSourceType parseSourceType(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return DocumentSourceType.valueOf(raw.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new DomainException("不支持的资料类型: " + raw + "，可选值为: GENERAL, LEGAL, POLICY");
+        }
     }
 
     /**

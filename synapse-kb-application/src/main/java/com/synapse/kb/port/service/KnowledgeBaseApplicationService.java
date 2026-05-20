@@ -656,7 +656,7 @@ public class KnowledgeBaseApplicationService implements
     }
 
     private List<ChunkReference> retrieveReferences(Query query, PreparedQuery preparedQuery, LocalDate asOfDate) {
-        RetrievalFilter filter = new RetrievalFilter(asOfDate, null, null);
+        RetrievalFilter filter = new RetrievalFilter(asOfDate, query.sourceType(), query.jurisdiction());
         CompletableFuture<List<ChunkReference>> vectorFuture = CompletableFuture.supplyAsync(
                 () -> vectorStorePort.search(query.knowledgeBaseId(), preparedQuery.embedding(), vectorCandidateK, filter),
                 retrievalExecutor
@@ -666,11 +666,11 @@ public class KnowledgeBaseApplicationService implements
                 retrievalExecutor
         );
         List<ChunkReference> merged = mergeAndRerank(await(vectorFuture), await(keywordFuture));
-        List<ChunkReference> filtered = filterByDocumentEffectiveDate(merged, asOfDate);
+        List<ChunkReference> filtered = filterByDocumentEffectiveDate(merged, query, asOfDate);
         return deduplicateByCanonicalKey(filtered);
     }
 
-    private List<ChunkReference> filterByDocumentEffectiveDate(List<ChunkReference> references, LocalDate asOfDate) {
+    private List<ChunkReference> filterByDocumentEffectiveDate(List<ChunkReference> references, Query query, LocalDate asOfDate) {
         if (references.isEmpty()) {
             return references;
         }
@@ -692,7 +692,18 @@ public class KnowledgeBaseApplicationService implements
                     if (doc.getIndexStatus() != DocumentIndexStatus.SYNCED) {
                         return false;
                     }
-                    return doc.isEffectiveOn(asOfDate);
+                    if (!doc.isEffectiveOn(asOfDate)) {
+                        return false;
+                    }
+                    // sourceType 兜底过滤
+                    if (query.sourceType() != null && query.sourceType() != doc.getSourceType()) {
+                        return false;
+                    }
+                    // jurisdiction 兜底过滤
+                    if (query.jurisdiction() != null && !query.jurisdiction().equals(doc.getJurisdiction())) {
+                        return false;
+                    }
+                    return true;
                 })
                 .map(ref -> {
                     Document doc = documentMap.get(ref.documentId());

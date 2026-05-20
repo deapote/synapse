@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/query'
-import type { ChatMessage, ChatMessageResponse, ChatSession, ChunkReference, CitationValidation } from '@/types'
+import type { ChatMessage, ChatMessageResponse, ChatSession, ChunkReference, CitationValidation, DocumentSourceType } from '@/types'
 
 function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -68,7 +68,11 @@ export const useChatStore = defineStore('chat', () => {
   /**
    * 发送问题（流式模式）。
    */
-  function sendQuestionStream(knowledgeBaseId: string, query: string, asOfDate?: string) {
+  function sendQuestionStream(
+    knowledgeBaseId: string,
+    query: string,
+    options?: { asOfDate?: string; sourceType?: DocumentSourceType; jurisdiction?: string }
+  ) {
     const generation = ++currentGeneration
 
     // 添加用户消息
@@ -95,7 +99,7 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
     stopFlushTimer()
 
-    currentAbortCtrl = api.streamQueryKnowledgeBase(knowledgeBaseId, query, sessionId.value, {
+    currentAbortCtrl = api.streamQueryKnowledgeBase(knowledgeBaseId, query, {
       onSession: (id: string) => {
         if (generation !== currentGeneration) return
         sessionId.value = id
@@ -155,7 +159,12 @@ export const useChatStore = defineStore('chat', () => {
         }
         currentAbortCtrl = null
       }
-    }, asOfDate)
+    }, {
+      sessionId: sessionId.value,
+      asOfDate: options?.asOfDate || null,
+      sourceType: options?.sourceType || null,
+      jurisdiction: options?.jurisdiction || null
+    })
   }
 
   /**

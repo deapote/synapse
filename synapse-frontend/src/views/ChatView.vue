@@ -3,7 +3,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBase'
 import { useChatStore } from '@/stores/chat'
-import type { ChatMessage, ChunkReference, DocumentLifecycleStatus } from '@/types'
+import type { ChatMessage, ChunkReference, DocumentLifecycleStatus, DocumentSourceType } from '@/types'
 import {
   Send,
   Square,
@@ -32,6 +32,8 @@ const inputText = ref('')
 const messagesContainer = ref<HTMLDivElement | null>(null)
 const showKbSelector = ref(false)
 const asOfDate = ref('')
+const sourceType = ref<DocumentSourceType | ''>('')
+const jurisdiction = ref('')
 
 onMounted(() => {
   if (kbStore.list.length === 0) {
@@ -79,7 +81,11 @@ function handleSend() {
   }
 
   inputText.value = ''
-  chatStore.sendQuestionStream(kbId.value, text, asOfDate.value || undefined)
+  chatStore.sendQuestionStream(kbId.value, text, {
+    asOfDate: asOfDate.value || undefined,
+    sourceType: sourceType.value || undefined,
+    jurisdiction: jurisdiction.value || undefined
+  })
   scrollToBottom()
 }
 
@@ -294,26 +300,58 @@ function formatShortDate(dateStr: string | null | undefined): string {
         {{ chatStore.error }}
       </div>
 
-      <!-- asOfDate 控件 -->
-      <div class="asof-date-bar">
-        <div class="asof-date-control">
+      <!-- 检索条件控件 -->
+      <div class="filter-bar">
+        <div class="filter-group">
           <Calendar :size="12" />
-          <span class="asof-label">适用日期</span>
+          <span class="filter-label">适用日期</span>
           <input
             v-model="asOfDate"
             type="date"
-            class="asof-input"
+            class="filter-input"
             title="不填则使用当前日期"
           />
-          <button v-if="asOfDate" class="asof-clear" @click="asOfDate = ''" title="清除">
+          <button v-if="asOfDate" class="filter-clear" @click="asOfDate = ''" title="清除">
             ×
           </button>
         </div>
-        <span v-if="asOfDate" class="asof-hint">
-          按 {{ new Date(asOfDate).toLocaleDateString('zh-CN') }} 查询适用资料
+        <div class="filter-group">
+          <Tag :size="12" />
+          <span class="filter-label">资料类型</span>
+          <select v-model="sourceType" class="filter-select" title="不选则检索全部类型">
+            <option value="">全部</option>
+            <option value="GENERAL">普通资料</option>
+            <option value="LEGAL">法规</option>
+            <option value="POLICY">政策</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <MapPin :size="12" />
+          <span class="filter-label">管辖范围</span>
+          <input
+            v-model="jurisdiction"
+            type="text"
+            class="filter-input filter-jurisdiction"
+            placeholder="如 全国、广东省"
+            title="不填则检索全部范围"
+          />
+          <button v-if="jurisdiction" class="filter-clear" @click="jurisdiction = ''" title="清除">
+            ×
+          </button>
+        </div>
+      </div>
+      <div class="filter-hint">
+        <span v-if="asOfDate">
+          按 {{ new Date(asOfDate).toLocaleDateString('zh-CN') }} 查询
         </span>
-        <span v-else class="asof-hint">
-          默认使用当前日期
+        <span v-if="sourceType">
+          {{ sourceType === 'GENERAL' ? '普通资料' : sourceType === 'LEGAL' ? '法规' : '政策' }}
+        </span>
+        <span v-if="jurisdiction">
+          {{ jurisdiction }}
+        </span>
+        <span v-if="!asOfDate && !sourceType && !jurisdiction">
+          默认使用当前日期，检索全部类型和范围
         </span>
       </div>
 
@@ -758,19 +796,19 @@ function formatShortDate(dateStr: string | null | undefined): string {
   font-size: 13px;
 }
 
-/* asOfDate bar */
-.asof-date-bar {
+/* Filter bar */
+.filter-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  gap: 6px;
 }
 
-.asof-date-control {
+.filter-group {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -779,11 +817,26 @@ function formatShortDate(dateStr: string | null | undefined): string {
   font-size: 12px;
 }
 
-.asof-label {
+.filter-label {
   font-weight: 500;
 }
 
-.asof-input {
+.filter-input {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: inherit;
+  outline: none;
+  padding: 0;
+  width: 110px;
+}
+
+.filter-input.filter-jurisdiction {
+  width: 90px;
+}
+
+.filter-select {
   border: none;
   background: transparent;
   font-size: 12px;
@@ -794,7 +847,7 @@ function formatShortDate(dateStr: string | null | undefined): string {
   cursor: pointer;
 }
 
-.asof-clear {
+.filter-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -810,13 +863,19 @@ function formatShortDate(dateStr: string | null | undefined): string {
   padding: 0;
 }
 
-.asof-clear:hover {
+.filter-clear:hover {
   background: var(--border-strong);
   color: var(--text-primary);
 }
 
-.asof-hint {
+.filter-hint {
   font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.filter-hint span + span::before {
+  content: ' · ';
   color: var(--text-muted);
 }
 
