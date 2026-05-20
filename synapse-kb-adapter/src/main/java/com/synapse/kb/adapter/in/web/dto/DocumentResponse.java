@@ -20,6 +20,11 @@ public record DocumentResponse(
         String lifecycleStatus,
         String supersedesDocumentId,
         Integer authorityLevel,
-        String jurisdiction
+        String jurisdiction,
+        Long metadataVersion,
+        Long indexedMetadataVersion,
+        String indexStatus,
+        Instant lastIndexRefreshAt,
+        String lastIndexFailureReason
 ) {
 }

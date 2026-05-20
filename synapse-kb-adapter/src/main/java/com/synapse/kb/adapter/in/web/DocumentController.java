@@ -1,6 +1,8 @@
 package com.synapse.kb.adapter.in.web;
 
+import com.synapse.kb.adapter.in.web.dto.DocumentAuditEventResponse;
 import com.synapse.kb.adapter.in.web.dto.DocumentResponse;
+import com.synapse.kb.adapter.in.web.dto.RetireDocumentRequest;
 import com.synapse.kb.adapter.in.web.dto.SupersedeDocumentRequest;
 import com.synapse.kb.adapter.in.web.dto.UpdateDocumentMetadataRequest;
 import com.synapse.kb.model.Document;
@@ -9,12 +11,9 @@ import com.synapse.kb.model.DocumentLifecycleStatus;
 import com.synapse.kb.model.DocumentMetadata;
 import com.synapse.kb.model.DocumentSourceType;
 import com.synapse.kb.model.KnowledgeBaseId;
-import com.synapse.kb.port.in.DeleteDocumentUseCase;
-import com.synapse.kb.port.in.IngestDocumentUseCase;
-import com.synapse.kb.port.in.ListDocumentUseCase;
-import com.synapse.kb.port.in.RetryDocumentIngestionUseCase;
-import com.synapse.kb.port.in.SupersedeDocumentUseCase;
-import com.synapse.kb.port.in.UpdateDocumentMetadataUseCase;
+import com.synapse.kb.model.PatchDocumentMetadata;
+import com.synapse.kb.model.PatchValue;
+import com.synapse.kb.port.in.*;
 import com.synapse.shared.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.buffer.DataBufferUtils;
@@ -43,6 +42,11 @@ public class DocumentController {
     private final RetryDocumentIngestionUseCase retryUseCase;
     private final UpdateDocumentMetadataUseCase updateMetadataUseCase;
     private final SupersedeDocumentUseCase supersedeUseCase;
+    private final RetireDocumentUseCase retireUseCase;
+    private final ReactivateDocumentUseCase reactivateUseCase;
+    private final ReindexDocumentUseCase reindexUseCase;
+    private final GetDocumentVersionChainUseCase versionChainUseCase;
+    private final GetDocumentAuditEventsUseCase auditEventsUseCase;
     private final long maxFileBytes;
     private final List<String> allowedExtensions;
     private final List<String> allowedContentTypes;
@@ -54,6 +58,11 @@ public class DocumentController {
                               RetryDocumentIngestionUseCase retryUseCase,
                               UpdateDocumentMetadataUseCase updateMetadataUseCase,
                               SupersedeDocumentUseCase supersedeUseCase,
+                              RetireDocumentUseCase retireUseCase,
+                              ReactivateDocumentUseCase reactivateUseCase,
+                              ReindexDocumentUseCase reindexUseCase,
+                              GetDocumentVersionChainUseCase versionChainUseCase,
+                              GetDocumentAuditEventsUseCase auditEventsUseCase,
                               @Value("${synapse.upload.max-file-bytes:20971520}") long maxFileBytes,
                               @Value("${synapse.upload.allowed-extensions:pdf,doc,docx,txt,md}") List<String> allowedExtensions,
                               @Value("${synapse.upload.allowed-content-types:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown}") List<String> allowedContentTypes,
@@ -64,6 +73,11 @@ public class DocumentController {
         this.retryUseCase = retryUseCase;
         this.updateMetadataUseCase = updateMetadataUseCase;
         this.supersedeUseCase = supersedeUseCase;
+        this.retireUseCase = retireUseCase;
+        this.reactivateUseCase = reactivateUseCase;
+        this.reindexUseCase = reindexUseCase;
+        this.versionChainUseCase = versionChainUseCase;
+        this.auditEventsUseCase = auditEventsUseCase;
         this.maxFileBytes = maxFileBytes;
         this.allowedExtensions = allowedExtensions;
         this.allowedContentTypes = allowedContentTypes;
@@ -128,12 +142,39 @@ public class DocumentController {
     public Mono<List<DocumentResponse>> list(
             @PathVariable String kbId,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) String lifecycleStatus,
+            @RequestParam(required = false) String indexStatus,
+            @RequestParam(required = false) String canonicalKey
     ) {
         return SaTokenReactorBridge.blockingCall(() -> {
             validatePage(page, size);
-            List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId), page, size);
-            return docs.stream()
+            List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId));
+
+            java.util.stream.Stream<Document> stream = docs.stream();
+            if (sourceType != null && !sourceType.isBlank()) {
+                stream = stream.filter(d -> sourceType.equalsIgnoreCase(
+                        d.getSourceType() != null ? d.getSourceType().name() : null));
+            }
+            if (lifecycleStatus != null && !lifecycleStatus.isBlank()) {
+                stream = stream.filter(d -> lifecycleStatus.equalsIgnoreCase(
+                        d.getLifecycleStatus() != null ? d.getLifecycleStatus().name() : null));
+            }
+            if (indexStatus != null && !indexStatus.isBlank()) {
+                stream = stream.filter(d -> indexStatus.equalsIgnoreCase(
+                        d.getIndexStatus() != null ? d.getIndexStatus().name() : null));
+            }
+            if (canonicalKey != null && !canonicalKey.isBlank()) {
+                stream = stream.filter(d -> canonicalKey.equals(d.getCanonicalKey()));
+            }
+
+            List<Document> filtered = stream.toList();
+            int from = page * size;
+            int to = Math.min(from + size, filtered.size());
+            List<Document> paginated = from < filtered.size() ? filtered.subList(from, to) : List.of();
+
+            return paginated.stream()
                     .map(this::toResponse)
                     .toList();
         });
@@ -155,17 +196,16 @@ public class DocumentController {
             @RequestBody UpdateDocumentMetadataRequest request
     ) {
         return SaTokenReactorBridge.blockingCall(() -> {
-            DocumentMetadata metadata = new DocumentMetadata(
-                    request.sourceType() != null ? DocumentSourceType.valueOf(request.sourceType()) : null,
-                    request.canonicalKey(),
-                    request.versionLabel(),
-                    request.effectiveFrom(),
-                    request.effectiveTo(),
-                    request.supersedesDocumentId(),
-                    request.authorityLevel(),
-                    request.jurisdiction()
+            PatchDocumentMetadata patch = new PatchDocumentMetadata(
+                    toPatchValue(request.sourceType(), DocumentSourceType::valueOf),
+                    toPatchValue(request.canonicalKey(), v -> v),
+                    toPatchValue(request.versionLabel(), v -> v),
+                    toPatchValue(request.effectiveFrom(), v -> v),
+                    toPatchValue(request.effectiveTo(), v -> v),
+                    toPatchValue(request.authorityLevel(), v -> v),
+                    toPatchValue(request.jurisdiction(), v -> v)
             );
-            Document document = updateMetadataUseCase.updateMetadata(new DocumentId(id), metadata);
+            Document document = updateMetadataUseCase.updateMetadata(new DocumentId(id), patch);
             return toResponse(document);
         });
     }
@@ -181,6 +221,47 @@ public class DocumentController {
                         new DocumentId(request.newDocumentId()),
                         request.effectiveTo()
                 ));
+    }
+
+    @PostMapping("/api/documents/{id}/retire")
+    public Mono<DocumentResponse> retire(
+            @PathVariable String id,
+            @RequestBody RetireDocumentRequest request
+    ) {
+        return SaTokenReactorBridge.blockingCall(() ->
+                toResponse(retireUseCase.retire(new DocumentId(id), request.effectiveTo())));
+    }
+
+    @PostMapping("/api/documents/{id}/reactivate")
+    public Mono<DocumentResponse> reactivate(@PathVariable String id) {
+        return SaTokenReactorBridge.blockingCall(() ->
+                toResponse(reactivateUseCase.reactivate(new DocumentId(id))));
+    }
+
+    @PostMapping("/api/documents/{id}/reindex")
+    public Mono<DocumentResponse> reindex(@PathVariable String id) {
+        return SaTokenReactorBridge.blockingCall(() ->
+                toResponse(reindexUseCase.reindex(new DocumentId(id))));
+    }
+
+    @GetMapping("/api/documents/{id}/version-chain")
+    public Mono<List<DocumentResponse>> versionChain(@PathVariable String id) {
+        return SaTokenReactorBridge.blockingCall(() ->
+                versionChainUseCase.getVersionChain(new DocumentId(id)).stream()
+                        .map(this::toResponse)
+                        .toList());
+    }
+
+    @GetMapping("/api/documents/{id}/audit-events")
+    public Mono<List<DocumentAuditEventResponse>> auditEvents(@PathVariable String id) {
+        return SaTokenReactorBridge.blockingCall(() ->
+                auditEventsUseCase.getAuditEvents(new DocumentId(id)).stream()
+                        .map(e -> new DocumentAuditEventResponse(
+                                e.id(), e.documentId(), e.knowledgeBaseId(), e.actorUserId(),
+                                e.action(), e.beforeSnapshot(), e.afterSnapshot(),
+                                e.reason(), e.createdAt()
+                        ))
+                        .toList());
     }
 
     private DocumentMetadata parseMetadata(String sourceType, String canonicalKey, String versionLabel,
@@ -269,7 +350,12 @@ public class DocumentController {
                 document.getLifecycleStatus() != null ? document.getLifecycleStatus().name() : null,
                 document.getSupersedesDocumentId(),
                 document.getAuthorityLevel(),
-                document.getJurisdiction()
+                document.getJurisdiction(),
+                document.getMetadataVersion(),
+                document.getIndexedMetadataVersion(),
+                document.getIndexStatus() != null ? document.getIndexStatus().name() : null,
+                document.getLastIndexRefreshAt(),
+                document.getLastIndexFailureReason()
         );
     }
 
@@ -277,7 +363,18 @@ public class DocumentController {
                                          String contentType, long fileSize) {
         return new DocumentResponse(
                 documentId.value(), kbId, fileName, contentType, fileSize,
-                "PENDING", 0, null, null, null, null, null, null, null, null, 0, null
+                "PENDING", 0, null, null, null, null, null, null, null, null, 0, null,
+                null, null, null, null, null
         );
+    }
+
+    private static <T, R> PatchValue<R> toPatchValue(java.util.Optional<T> optional, java.util.function.Function<T, R> mapper) {
+        if (optional == null) {
+            return PatchValue.unset();
+        }
+        if (optional.isEmpty()) {
+            return PatchValue.clear();
+        }
+        return PatchValue.set(mapper.apply(optional.get()));
     }
 }

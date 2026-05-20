@@ -29,4 +29,7 @@ public interface DocumentRepository {
     /** 按知识库 + canonicalKey + 时效状态查找文档，用于版本替代和检索去重。 */
     List<Document> findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(
             KnowledgeBaseId knowledgeBaseId, String canonicalKey, DocumentLifecycleStatus status);
+
+    /** 查找替代了指定文档的所有文档。 */
+    List<Document> findBySupersedesDocumentId(DocumentId documentId);
 }

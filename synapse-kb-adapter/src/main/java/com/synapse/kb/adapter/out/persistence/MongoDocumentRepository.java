@@ -3,6 +3,7 @@ package com.synapse.kb.adapter.out.persistence;
 import com.synapse.kb.adapter.out.persistence.entity.DocumentDocument;
 import com.synapse.kb.model.Document;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentIndexStatus;
 import com.synapse.kb.model.DocumentLifecycleStatus;
 import com.synapse.kb.model.DocumentSourceType;
 import com.synapse.kb.model.DocumentStatus;
@@ -107,6 +108,14 @@ public class MongoDocumentRepository implements DocumentRepository {
                 .toList();
     }
 
+    @Override
+    public List<Document> findBySupersedesDocumentId(DocumentId documentId) {
+        return documentMongoRepository.findBySupersedesDocumentId(documentId.value())
+                .stream()
+                .map(this::toEntity)
+                .toList();
+    }
+
     private DocumentDocument toDocument(Document document) {
         DocumentDocument doc = new DocumentDocument();
         doc.setId(document.getId().value());
@@ -122,7 +131,7 @@ public class MongoDocumentRepository implements DocumentRepository {
         doc.setContentObjectId(document.getContentObjectId());
         doc.setProcessingStartAt(document.getProcessingStartAt());
         doc.setProcessingCompleteAt(document.getProcessingCompleteAt());
-        doc.setSourceType(document.getSourceType().name());
+        doc.setSourceType(document.getSourceType() != null ? document.getSourceType().name() : null);
         doc.setCanonicalKey(document.getCanonicalKey());
         doc.setVersionLabel(document.getVersionLabel());
         doc.setEffectiveFrom(document.getEffectiveFrom());
@@ -131,6 +140,11 @@ public class MongoDocumentRepository implements DocumentRepository {
         doc.setSupersedesDocumentId(document.getSupersedesDocumentId());
         doc.setAuthorityLevel(document.getAuthorityLevel());
         doc.setJurisdiction(document.getJurisdiction());
+        doc.setMetadataVersion(document.getMetadataVersion());
+        doc.setIndexedMetadataVersion(document.getIndexedMetadataVersion());
+        doc.setIndexStatus(document.getIndexStatus().name());
+        doc.setLastIndexRefreshAt(document.getLastIndexRefreshAt());
+        doc.setLastIndexFailureReason(document.getLastIndexFailureReason());
         return doc;
     }
 
@@ -146,6 +160,10 @@ public class MongoDocumentRepository implements DocumentRepository {
         DocumentLifecycleStatus lifecycleStatus = doc.getLifecycleStatus() != null
                 ? DocumentLifecycleStatus.valueOf(doc.getLifecycleStatus())
                 : DocumentLifecycleStatus.ACTIVE;
+
+        DocumentIndexStatus indexStatus = doc.getIndexStatus() != null
+                ? DocumentIndexStatus.valueOf(doc.getIndexStatus())
+                : DocumentIndexStatus.SYNCED;
 
         LocalDate effectiveFrom = doc.getEffectiveFrom() != null
                 ? doc.getEffectiveFrom()
@@ -177,7 +195,12 @@ public class MongoDocumentRepository implements DocumentRepository {
                 lifecycleStatus,
                 doc.getSupersedesDocumentId(),
                 authorityLevel,
-                doc.getJurisdiction()
+                doc.getJurisdiction(),
+                doc.getMetadataVersion(),
+                doc.getIndexedMetadataVersion(),
+                indexStatus,
+                doc.getLastIndexRefreshAt(),
+                doc.getLastIndexFailureReason()
         );
     }
 }

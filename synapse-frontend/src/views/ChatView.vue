@@ -3,7 +3,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBase'
 import { useChatStore } from '@/stores/chat'
-import type { ChatMessage, ChunkReference } from '@/types'
+import type { ChatMessage, ChunkReference, DocumentLifecycleStatus } from '@/types'
 import {
   Send,
   Square,
@@ -12,6 +12,12 @@ import {
   BookOpen,
   ChevronDown,
   Plus,
+  Calendar,
+  Tag,
+  MapPin,
+  FileBadge,
+  Clock,
+  AlertTriangle
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -25,6 +31,7 @@ const kb = computed(() => kbStore.list.find((k) => k.id === kbId.value))
 const inputText = ref('')
 const messagesContainer = ref<HTMLDivElement | null>(null)
 const showKbSelector = ref(false)
+const asOfDate = ref('')
 
 onMounted(() => {
   if (kbStore.list.length === 0) {
@@ -72,7 +79,7 @@ function handleSend() {
   }
 
   inputText.value = ''
-  chatStore.sendQuestionStream(kbId.value, text)
+  chatStore.sendQuestionStream(kbId.value, text, asOfDate.value || undefined)
   scrollToBottom()
 }
 
@@ -121,6 +128,20 @@ function validationWarning(msg: ChatMessage): string {
   return msg.validation.warnings.length > 0
     ? msg.validation.warnings.join('；')
     : '引用校验未通过，答案可能包含未由知识库支持的内容'
+}
+
+function lifecycleStatusLabel(status: DocumentLifecycleStatus | null | undefined): string {
+  const map: Record<string, string> = {
+    ACTIVE: '生效中',
+    SUPERSEDED: '已替代',
+    RETIRED: '已废止'
+  }
+  return status ? map[status] || status : ''
+}
+
+function formatShortDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return ''
+  return new Date(dateStr).toLocaleDateString('zh-CN')
 }
 </script>
 
@@ -205,7 +226,7 @@ function validationWarning(msg: ChatMessage): string {
                 v-for="(ref, idx) in visibleReferences(msg)"
                 :key="`${ref.sourceId}-${ref.documentId}-${ref.startPosition}`"
                 class="reference-card"
-                :class="{ used: ref.used, candidate: ref.used === false }"
+                :class="{ used: ref.used, candidate: ref.used === false, 'temporal-stale': ref.lifecycleStatus === 'SUPERSEDED' || ref.lifecycleStatus === 'RETIRED' }"
               >
                 <div class="reference-header">
                   <span class="reference-num">{{ referenceNumber(ref, idx) }}</span>
@@ -213,6 +234,36 @@ function validationWarning(msg: ChatMessage): string {
                   <span v-if="ref.used" class="reference-used">已引用</span>
                   <span class="reference-score">相关度 {{ ref.score.toFixed(2) }}</span>
                 </div>
+
+                <!-- 时效信息条 -->
+                <div v-if="ref.versionLabel || ref.effectiveFrom || ref.lifecycleStatus || ref.jurisdiction || ref.canonicalKey" class="reference-temporal">
+                  <span v-if="ref.versionLabel" class="temporal-tag">
+                    <Tag :size="10" />
+                    {{ ref.versionLabel }}
+                  </span>
+                  <span v-if="ref.effectiveFrom || ref.effectiveTo" class="temporal-tag">
+                    <Clock :size="10" />
+                    {{ formatShortDate(ref.effectiveFrom) }}
+                    <span v-if="ref.effectiveTo">~ {{ formatShortDate(ref.effectiveTo) }}前</span>
+                    <span v-else>起长期有效</span>
+                  </span>
+                  <span v-if="ref.lifecycleStatus" class="temporal-tag" :class="`ls-${ref.lifecycleStatus.toLowerCase()}`">
+                    <FileBadge :size="10" />
+                    {{ lifecycleStatusLabel(ref.lifecycleStatus) }}
+                  </span>
+                  <span v-if="ref.jurisdiction" class="temporal-tag">
+                    <MapPin :size="10" />
+                    {{ ref.jurisdiction }}
+                  </span>
+                  <span v-if="ref.canonicalKey" class="temporal-tag">
+                    <FileBadge :size="10" />
+                    {{ ref.canonicalKey }}
+                  </span>
+                  <span v-if="ref.lifecycleStatus === 'SUPERSEDED' || ref.lifecycleStatus === 'RETIRED'" class="temporal-warning">
+                    <AlertTriangle :size="10" />
+                  </span>
+                </div>
+
                 <div class="reference-text">{{ ref.chunkText }}</div>
               </div>
             </div>
@@ -242,6 +293,30 @@ function validationWarning(msg: ChatMessage): string {
       <div v-if="chatStore.error" class="input-error">
         {{ chatStore.error }}
       </div>
+
+      <!-- asOfDate 控件 -->
+      <div class="asof-date-bar">
+        <div class="asof-date-control">
+          <Calendar :size="12" />
+          <span class="asof-label">适用日期</span>
+          <input
+            v-model="asOfDate"
+            type="date"
+            class="asof-input"
+            title="不填则使用当前日期"
+          />
+          <button v-if="asOfDate" class="asof-clear" @click="asOfDate = ''" title="清除">
+            ×
+          </button>
+        </div>
+        <span v-if="asOfDate" class="asof-hint">
+          按 {{ new Date(asOfDate).toLocaleDateString('zh-CN') }} 查询适用资料
+        </span>
+        <span v-else class="asof-hint">
+          默认使用当前日期
+        </span>
+      </div>
+
       <div class="input-wrap">
         <textarea
           v-model="inputText"
@@ -477,6 +552,7 @@ function validationWarning(msg: ChatMessage): string {
 .message-content {
   flex: 1;
   padding-top: 2px;
+  min-width: 0;
 }
 
 .message-text {
@@ -534,11 +610,16 @@ function validationWarning(msg: ChatMessage): string {
   background: #f8fafc;
 }
 
+.reference-card.temporal-stale {
+  border-left-color: var(--warning);
+}
+
 .reference-header {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
 }
 
 .reference-num {
@@ -574,6 +655,47 @@ function validationWarning(msg: ChatMessage): string {
   font-size: 11px;
   color: var(--text-muted);
   margin-left: auto;
+}
+
+/* Reference temporal info */
+.reference-temporal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.temporal-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.temporal-tag.ls-active {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.temporal-tag.ls-superseded {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+
+.temporal-tag.ls-retired {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.temporal-warning {
+  display: inline-flex;
+  align-items: center;
+  color: var(--warning);
 }
 
 .reference-text {
@@ -623,7 +745,7 @@ function validationWarning(msg: ChatMessage): string {
 /* Input area */
 .input-area {
   flex-shrink: 0;
-  padding: 16px 0 24px;
+  padding: 12px 0 24px;
   border-top: 1px solid var(--border);
 }
 
@@ -634,6 +756,68 @@ function validationWarning(msg: ChatMessage): string {
   color: var(--danger);
   border-radius: var(--radius-sm);
   font-size: 13px;
+}
+
+/* asOfDate bar */
+.asof-date-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+
+.asof-date-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.asof-label {
+  font-weight: 500;
+}
+
+.asof-input {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: inherit;
+  outline: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.asof-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.asof-clear:hover {
+  background: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.asof-hint {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .input-wrap {

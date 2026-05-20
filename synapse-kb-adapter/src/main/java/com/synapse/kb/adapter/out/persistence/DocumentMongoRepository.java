@@ -15,4 +15,6 @@ public interface DocumentMongoRepository extends MongoRepository<DocumentDocumen
     boolean existsByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
 
     List<DocumentDocument> findByKnowledgeBaseIdAndContentHash(String knowledgeBaseId, String contentHash);
+
+    List<DocumentDocument> findBySupersedesDocumentId(String supersedesDocumentId);
 }

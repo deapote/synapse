@@ -74,13 +74,25 @@ synapse-frontend/
 ├── src/
 │   ├── api/                           # API 客户端
 │   │   ├── client.ts                  # axios 配置
-│   │   └── query.ts                   # SSE 手动解析
+│   │   ├── document.ts                # 文档上传（含 metadata FormData）
+│   │   ├── query.ts                   # SSE 手动解析（含 asOfDate）
+│   │   └── ...
 │   ├── stores/                        # Pinia Store
-│   │   └── chat.ts                    # 竞态防护、Token 缓冲
+│   │   ├── chat.ts                    # 竞态防护、Token 缓冲、asOfDate 透传
+│   │   ├── document.ts                # 文档列表、上传状态
+│   │   └── ...
+│   ├── types/                         # TypeScript 类型
+│   │   └── index.ts                   # Document, ChunkReference, QueryRequest 时效字段
 │   ├── composables/                   # 可复用逻辑
 │   │   └── usePolling.ts              # 轮询 Hook
 │   ├── views/                         # 页面
+│   │   ├── KnowledgeBaseDetail.vue    # 文档列表 + 上传弹窗（metadata 表单）
+│   │   ├── ChatView.vue               # 问答 + asOfDate 控件 + 引用时效展示
+│   │   └── ...
 │   ├── components/                    # 通用组件
+│   │   ├── StatusBadge.vue            # 摄入状态 badge
+│   │   ├── ConfirmDialog.vue          # 确认弹窗
+│   │   └── EmptyState.vue             # 空状态
 │   └── router/                        # 路由配置
 ```
 
@@ -99,6 +111,6 @@ synapse-frontend/
 | 端口设计模式 | [design/ports](../design/ports) |
 | SSE 事件协议 | [reference/api/streaming-query](../reference/api/streaming-query) |
 | 递归分块算法 | [design/chunking](../design/chunking) |
-| 前端竞态防护 | [design/frontend](../design/frontend) |
+| 前端架构与时效 UI | [design/frontend](../design/frontend) |
 | 配置项参考 | [reference/configuration](../reference/configuration) |
 | 术语表 | [reference/glossary](../reference/glossary) |

@@ -263,7 +263,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
 
     @Override
     public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {
-        throw new UnsupportedOperationException("v1 不支持在线修改向量索引元数据，请通过重新摄入新版本完成时效变更");
+        // v2 使用异步索引刷新任务，不在请求线程中直接更新
     }
 
     private void insert(String collection, List<JsonObject> data) {

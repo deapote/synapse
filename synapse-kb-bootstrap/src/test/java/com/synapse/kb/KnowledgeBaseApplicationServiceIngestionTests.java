@@ -147,12 +147,32 @@ class KnowledgeBaseApplicationServiceIngestionTests {
                 },
                 new ChunkSearchIndexPort() {
                     @Override public void store(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, DocumentMetadata metadata) { keywordStores++; }
+                    @Override public void refreshStore(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName, List<DocumentChunk> chunks, DocumentMetadata metadata) { keywordStores++; }
                     @Override public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK, RetrievalFilter filter) { return List.of(); }
                     @Override public void deleteByDocumentId(KnowledgeBaseId knowledgeBaseId, DocumentId documentId) { keywordDeletes++; }
                     @Override public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {}
                 },
+                new com.synapse.kb.repository.DocumentChunkRepository() {
+                    private final java.util.Map<DocumentId, List<DocumentChunk>> stored = new java.util.HashMap<>();
+                    @Override public void save(DocumentId documentId, List<DocumentChunk> chunks) { stored.put(documentId, chunks); }
+                    @Override public List<DocumentChunk> findByDocumentId(DocumentId documentId) { return stored.getOrDefault(documentId, List.of()); }
+                    @Override public void deleteByDocumentId(DocumentId documentId) { stored.remove(documentId); }
+                },
+                new com.synapse.kb.port.out.DocumentIndexRefreshJobRepository() {
+                    private final java.util.List<com.synapse.kb.model.DocumentIndexRefreshJob> jobs = new java.util.ArrayList<>();
+                    @Override public com.synapse.kb.model.DocumentIndexRefreshJob save(com.synapse.kb.model.DocumentIndexRefreshJob job) { jobs.removeIf(j -> j.getId().equals(job.getId())); jobs.add(job); return job; }
+                    @Override public java.util.Optional<com.synapse.kb.model.DocumentIndexRefreshJob> findById(String id) { return jobs.stream().filter(j -> j.getId().value().equals(id)).findFirst(); }
+                    @Override public List<com.synapse.kb.model.DocumentIndexRefreshJob> findPendingJobs(java.time.Instant before, int limit) { return List.of(); }
+                    @Override public java.util.Optional<com.synapse.kb.model.DocumentIndexRefreshJob> claimNext(String workerId) { return Optional.empty(); }
+                    @Override public void deleteByDocumentId(String documentId) { jobs.removeIf(j -> j.getDocumentId().value().equals(documentId)); }
+                },
                 query -> query,
                 (existingSummary, messages, maxChars) -> existingSummary,
+                new com.synapse.kb.port.out.AuditEventStorePort() {
+                    private final java.util.List<com.synapse.kb.port.out.AuditEventStorePort.AuditEvent> events = new java.util.ArrayList<>();
+                    @Override public void save(com.synapse.kb.port.out.AuditEventStorePort.AuditEvent event) { events.add(event); }
+                    @Override public List<com.synapse.kb.port.out.AuditEventStorePort.AuditEvent> findByDocumentId(DocumentId documentId) { return events.stream().filter(e -> e.documentId().equals(documentId)).toList(); }
+                },
                 new AllowAllAccessControlPort(),
                 Runnable::run,
                 "%s%s",
@@ -182,6 +202,7 @@ class KnowledgeBaseApplicationServiceIngestionTests {
         @Override public boolean existsByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) { return false; }
         @Override public List<Document> findByKnowledgeBaseIdAndContentHash(KnowledgeBaseId knowledgeBaseId, String contentHash) { return List.of(); }
         @Override public List<Document> findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(KnowledgeBaseId knowledgeBaseId, String canonicalKey, DocumentLifecycleStatus status) { return List.of(); }
+        @Override public List<Document> findBySupersedesDocumentId(DocumentId documentId) { return docs.values().stream().filter(doc -> documentId.value().equals(doc.getSupersedesDocumentId())).toList(); }
     }
 
     private static class InMemoryContentStore implements DocumentContentStorePort {

@@ -68,6 +68,12 @@ export interface RoleView {
 
 export type DocumentStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
 
+export type DocumentSourceType = 'GENERAL' | 'LEGAL' | 'POLICY'
+
+export type DocumentLifecycleStatus = 'ACTIVE' | 'SUPERSEDED' | 'RETIRED'
+
+export type DocumentIndexStatus = 'SYNCED' | 'STALE' | 'REFRESHING' | 'FAILED'
+
 export interface Document {
   id: string
   knowledgeBaseId: string
@@ -77,6 +83,55 @@ export interface Document {
   status: DocumentStatus
   chunkCount: number
   uploadedAt: string | null
+  // 时效元数据
+  sourceType?: DocumentSourceType | null
+  canonicalKey?: string | null
+  versionLabel?: string | null
+  effectiveFrom?: string | null
+  effectiveTo?: string | null
+  lifecycleStatus?: DocumentLifecycleStatus | null
+  supersedesDocumentId?: string | null
+  authorityLevel?: number | null
+  jurisdiction?: string | null
+  // v2 索引状态
+  metadataVersion?: number | null
+  indexedMetadataVersion?: number | null
+  indexStatus?: DocumentIndexStatus | null
+  lastIndexRefreshAt?: string | null
+  lastIndexFailureReason?: string | null
+}
+
+export interface DocumentAuditEvent {
+  id: string
+  documentId: string
+  knowledgeBaseId: string
+  actorUserId: string
+  action: string
+  beforeSnapshot: string | null
+  afterSnapshot: string | null
+  reason: string | null
+  createdAt: string
+}
+
+export interface PatchDocumentMetadata {
+  sourceType?: DocumentSourceType | null
+  canonicalKey?: string | null
+  versionLabel?: string | null
+  effectiveFrom?: string | null
+  effectiveTo?: string | null
+  authorityLevel?: number | null
+  jurisdiction?: string | null
+}
+
+export interface DocumentUploadMetadata {
+  sourceType?: DocumentSourceType
+  canonicalKey?: string
+  versionLabel?: string
+  effectiveFrom?: string
+  effectiveTo?: string
+  authorityLevel?: number
+  jurisdiction?: string
+  supersedesDocumentId?: string
 }
 
 // ========== 问答 ==========
@@ -84,6 +139,7 @@ export interface Document {
 export interface QueryRequest {
   query: string
   sessionId?: string
+  asOfDate?: string
 }
 
 export interface ChunkReference {
@@ -95,6 +151,14 @@ export interface ChunkReference {
   startPosition: number
   endPosition: number
   used?: boolean | null
+  // 时效元数据
+  canonicalKey?: string | null
+  versionLabel?: string | null
+  effectiveFrom?: string | null
+  effectiveTo?: string | null
+  lifecycleStatus?: DocumentLifecycleStatus | null
+  authorityLevel?: number | null
+  jurisdiction?: string | null
 }
 
 export interface CitationValidation {

@@ -40,7 +40,8 @@ export function streamQueryKnowledgeBase(
   knowledgeBaseId: string,
   query: string,
   sessionId: string | null,
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  asOfDate?: string | null
 ): AbortController {
   const ctrl = new AbortController()
   const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
@@ -52,10 +53,14 @@ export function streamQueryKnowledgeBase(
     headers[token.tokenName] = token.tokenValue
   }
 
+  const body: Record<string, string> = { query }
+  if (sessionId) body.sessionId = sessionId
+  if (asOfDate) body.asOfDate = asOfDate
+
   fetch(`${baseUrl}/knowledge-bases/${knowledgeBaseId}/query/stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(sessionId ? { query, sessionId } : { query }),
+    body: JSON.stringify(body),
     signal: ctrl.signal,
   })
     .then(async (response) => {

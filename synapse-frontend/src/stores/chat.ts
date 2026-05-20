@@ -68,7 +68,7 @@ export const useChatStore = defineStore('chat', () => {
   /**
    * 发送问题（流式模式）。
    */
-  function sendQuestionStream(knowledgeBaseId: string, query: string) {
+  function sendQuestionStream(knowledgeBaseId: string, query: string, asOfDate?: string) {
     const generation = ++currentGeneration
 
     // 添加用户消息
@@ -155,7 +155,7 @@ export const useChatStore = defineStore('chat', () => {
         }
         currentAbortCtrl = null
       }
-    })
+    }, asOfDate)
   }
 
   /**

@@ -64,6 +64,16 @@ public class DocumentDocument {
 
     private String jurisdiction;
 
+    private Long metadataVersion;
+
+    private Long indexedMetadataVersion;
+
+    private String indexStatus;
+
+    private Instant lastIndexRefreshAt;
+
+    private String lastIndexFailureReason;
+
     public DocumentDocument() {}
 
     public String getId() {
@@ -240,5 +250,45 @@ public class DocumentDocument {
 
     public void setJurisdiction(String jurisdiction) {
         this.jurisdiction = jurisdiction;
+    }
+
+    public Long getMetadataVersion() {
+        return metadataVersion;
+    }
+
+    public void setMetadataVersion(Long metadataVersion) {
+        this.metadataVersion = metadataVersion;
+    }
+
+    public Long getIndexedMetadataVersion() {
+        return indexedMetadataVersion;
+    }
+
+    public void setIndexedMetadataVersion(Long indexedMetadataVersion) {
+        this.indexedMetadataVersion = indexedMetadataVersion;
+    }
+
+    public String getIndexStatus() {
+        return indexStatus;
+    }
+
+    public void setIndexStatus(String indexStatus) {
+        this.indexStatus = indexStatus;
+    }
+
+    public Instant getLastIndexRefreshAt() {
+        return lastIndexRefreshAt;
+    }
+
+    public void setLastIndexRefreshAt(Instant lastIndexRefreshAt) {
+        this.lastIndexRefreshAt = lastIndexRefreshAt;
+    }
+
+    public String getLastIndexFailureReason() {
+        return lastIndexFailureReason;
+    }
+
+    public void setLastIndexFailureReason(String lastIndexFailureReason) {
+        this.lastIndexFailureReason = lastIndexFailureReason;
     }
 }

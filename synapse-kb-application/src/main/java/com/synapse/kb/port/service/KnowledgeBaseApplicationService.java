@@ -4,6 +4,7 @@ import com.synapse.kb.model.*;
 import com.synapse.kb.port.in.*;
 import com.synapse.kb.port.out.*;
 import com.synapse.kb.repository.ChatMessageRepository;
+import com.synapse.kb.repository.DocumentChunkRepository;
 import com.synapse.kb.repository.ChatSessionRepository;
 import com.synapse.kb.repository.DocumentRepository;
 import com.synapse.kb.repository.KnowledgeBaseRepository;
@@ -43,7 +44,13 @@ public class KnowledgeBaseApplicationService implements
         CreateChatSessionUseCase,
         ListChatMessagesUseCase,
         UpdateDocumentMetadataUseCase,
-        SupersedeDocumentUseCase {
+        SupersedeDocumentUseCase,
+        ProcessDocumentIndexRefreshJobUseCase,
+        RetireDocumentUseCase,
+        ReactivateDocumentUseCase,
+        ReindexDocumentUseCase,
+        GetDocumentVersionChainUseCase,
+        GetDocumentAuditEventsUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseApplicationService.class);
     private static final int MAX_FAILURE_REASON_LENGTH = 500;
@@ -59,8 +66,11 @@ public class KnowledgeBaseApplicationService implements
     private final EmbeddingPort embeddingPort;
     private final VectorStorePort vectorStorePort;
     private final ChunkSearchIndexPort chunkSearchIndexPort;
+    private final DocumentChunkRepository documentChunkRepository;
+    private final com.synapse.kb.port.out.DocumentIndexRefreshJobRepository refreshJobRepository;
     private final QueryRewritePort queryRewritePort;
     private final ChatMemorySummarizerPort chatMemorySummarizerPort;
+    private final AuditEventStorePort auditEventStorePort;
     private final AccessControlPort accessControlPort;
     private final Executor retrievalExecutor;
 
@@ -92,8 +102,11 @@ public class KnowledgeBaseApplicationService implements
             EmbeddingPort embeddingPort,
             VectorStorePort vectorStorePort,
             ChunkSearchIndexPort chunkSearchIndexPort,
+            DocumentChunkRepository documentChunkRepository,
+            com.synapse.kb.port.out.DocumentIndexRefreshJobRepository refreshJobRepository,
             QueryRewritePort queryRewritePort,
             ChatMemorySummarizerPort chatMemorySummarizerPort,
+            AuditEventStorePort auditEventStorePort,
             AccessControlPort accessControlPort,
             Executor retrievalExecutor,
             String promptTemplate,
@@ -122,8 +135,11 @@ public class KnowledgeBaseApplicationService implements
         this.embeddingPort = embeddingPort;
         this.vectorStorePort = vectorStorePort;
         this.chunkSearchIndexPort = chunkSearchIndexPort;
+        this.documentChunkRepository = documentChunkRepository;
+        this.refreshJobRepository = refreshJobRepository;
         this.queryRewritePort = queryRewritePort;
         this.chatMemorySummarizerPort = chatMemorySummarizerPort;
+        this.auditEventStorePort = auditEventStorePort;
         this.accessControlPort = accessControlPort;
         this.retrievalExecutor = retrievalExecutor;
         this.promptTemplate = promptTemplate;
@@ -176,6 +192,8 @@ public class KnowledgeBaseApplicationService implements
         for (Document doc : documents) {
             vectorStorePort.deleteByDocumentId(id, doc.getId());
             chunkSearchIndexPort.deleteByDocumentId(id, doc.getId());
+            documentChunkRepository.deleteByDocumentId(doc.getId());
+            refreshJobRepository.deleteByDocumentId(doc.getId().value());
             deleteContentObjectQuietly(doc);
             ingestionJobRepository.deleteByDocumentId(doc.getId());
             documentRepository.deleteById(doc.getId());
@@ -192,6 +210,8 @@ public class KnowledgeBaseApplicationService implements
         accessControlPort.checkKnowledgeBaseAccess(kb, "KB_DELETE");
         vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), id);
         chunkSearchIndexPort.deleteByDocumentId(document.getKnowledgeBaseId(), id);
+        documentChunkRepository.deleteByDocumentId(id);
+        refreshJobRepository.deleteByDocumentId(id.value());
         deleteContentObjectQuietly(document);
         ingestionJobRepository.deleteByDocumentId(id);
         documentRepository.deleteById(id);
@@ -295,6 +315,7 @@ public class KnowledgeBaseApplicationService implements
         }
         vectorStorePort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
         chunkSearchIndexPort.deleteByDocumentId(document.getKnowledgeBaseId(), document.getId());
+        documentChunkRepository.deleteByDocumentId(document.getId());
         ingestionJobRepository.deleteByDocumentId(document.getId());
         document.retry();
         document = documentRepository.save(document);
@@ -310,6 +331,83 @@ public class KnowledgeBaseApplicationService implements
         }
         runIngestionTask(job);
         return true;
+    }
+
+    @Override
+    public boolean processNextRefreshJob(String workerId) {
+        var jobOpt = refreshJobRepository.claimNext(workerId);
+        if (jobOpt.isEmpty()) {
+            return false;
+        }
+        runIndexRefreshTask(jobOpt.get());
+        return true;
+    }
+
+    private void runIndexRefreshTask(com.synapse.kb.model.DocumentIndexRefreshJob job) {
+        Document document = documentRepository.findById(job.getDocumentId()).orElse(null);
+        if (document == null) {
+            job.markFailed("文档不存在", Instant.now().plus(Duration.ofMinutes(1)));
+            refreshJobRepository.save(job);
+            return;
+        }
+
+        if (document.getMetadataVersion() != job.getMetadataVersion()) {
+            job.markSucceeded();
+            refreshJobRepository.save(job);
+            log.info("索引刷新任务跳过旧版本 jobId={} documentId={} jobVersion={} docVersion={}",
+                    job.getId().value(), document.getId().value(), job.getMetadataVersion(), document.getMetadataVersion());
+            return;
+        }
+
+        try {
+            document.markIndexRefreshing();
+            documentRepository.save(document);
+
+            List<DocumentChunk> chunks = documentChunkRepository.findByDocumentId(document.getId());
+            if (chunks.isEmpty()) {
+                throw new DomainException("文档分块不存在，无法重建索引");
+            }
+
+            List<float[]> embeddings = embeddingPort.embed(
+                    chunks.stream().map(DocumentChunk::text).toList()
+            );
+
+            DocumentMetadata metadata = toMetadata(document);
+
+            // 两阶段刷新：先写入新索引，成功后再清理旧索引。
+            // Milvus 目前无法按 generation 选择性删除旧行，暂以“写入不删旧”为底线，
+            // 旧行会在检索阶段因 metadata 不匹配被过滤掉（TODO: 后续引入 generation/alias 机制做物理清理）。
+            vectorStorePort.store(
+                    document.getKnowledgeBaseId(),
+                    document.getId(),
+                    document.getFileName(),
+                    chunks,
+                    embeddings,
+                    metadata
+            );
+            chunkSearchIndexPort.refreshStore(
+                    document.getKnowledgeBaseId(),
+                    document.getId(),
+                    document.getFileName(),
+                    chunks,
+                    metadata
+            );
+
+            document.markIndexSynced();
+            documentRepository.save(document);
+            job.markSucceeded();
+            refreshJobRepository.save(job);
+            log.info("索引刷新完成 jobId={} documentId={} chunks={}",
+                    job.getId().value(), document.getId().value(), chunks.size());
+        } catch (Exception e) {
+            String reason = safeFailureReason(e);
+            document.markIndexFailed(reason);
+            documentRepository.save(document);
+            job.markFailed(reason, Instant.now().plus(Duration.ofMinutes(1)));
+            refreshJobRepository.save(job);
+            log.warn("索引刷新失败 jobId={} documentId={} reason={}",
+                    job.getId().value(), document.getId().value(), reason, e);
+        }
     }
 
     private void runIngestionTask(IngestionJob job) {
@@ -373,20 +471,28 @@ public class KnowledgeBaseApplicationService implements
 
             List<DocumentChunk> chunks = parseDocumentChunks(document, contentObjectId);
             storeDocumentIndexes(document, chunks);
+            documentChunkRepository.save(document.getId(), chunks);
 
             document.setChunkCount(chunks.size());
             document.transitionTo(DocumentStatus.COMPLETED);
-
-            // 新文档摄入成功后，再执行版本替代
-            if (document.getSupersedesDocumentId() != null && !document.getSupersedesDocumentId().isBlank()) {
-                supersedeOldDocument(document);
-            }
 
         } catch (Exception e) {
             cleanupDocumentIndexesQuietly(document);
             throw new DomainException("文档处理失败: " + safeFailureReason(e), e);
         } finally {
             documentRepository.save(document);
+        }
+
+        // 新文档已稳定为 COMPLETED 后再尝试替代旧版本；替代失败只记录告警，不破坏新文档索引
+        if (document.getStatus() == DocumentStatus.COMPLETED
+                && document.getSupersedesDocumentId() != null
+                && !document.getSupersedesDocumentId().isBlank()) {
+            try {
+                supersedeOldDocument(document);
+            } catch (Exception e) {
+                log.warn("文档替代旧版本失败，新文档已稳定为 COMPLETED，待人工修复 documentId={} oldDocumentId={} reason={}",
+                        document.getId().value(), document.getSupersedesDocumentId(), safeFailureReason(e));
+            }
         }
     }
 
@@ -582,7 +688,34 @@ public class KnowledgeBaseApplicationService implements
                     if (doc == null) {
                         return true;
                     }
+                    // 排除索引未同步的文档：其引用元数据来自旧索引，不可信
+                    if (doc.getIndexStatus() != DocumentIndexStatus.SYNCED) {
+                        return false;
+                    }
                     return doc.isEffectiveOn(asOfDate);
+                })
+                .map(ref -> {
+                    Document doc = documentMap.get(ref.documentId());
+                    if (doc == null) {
+                        return ref;
+                    }
+                    // 用 Mongo 权威 metadata 覆盖索引中的旧 metadata
+                    return new ChunkReference(
+                            ref.documentId(),
+                            ref.documentName(),
+                            ref.chunkIndex(),
+                            ref.chunkText(),
+                            ref.score(),
+                            ref.startPosition(),
+                            ref.endPosition(),
+                            doc.getCanonicalKey(),
+                            doc.getVersionLabel(),
+                            doc.getEffectiveFrom(),
+                            doc.getEffectiveTo(),
+                            doc.getLifecycleStatus(),
+                            doc.getAuthorityLevel(),
+                            doc.getJurisdiction()
+                    );
                 })
                 .toList();
     }
@@ -657,13 +790,222 @@ public class KnowledgeBaseApplicationService implements
     }
 
     @Override
-    public Document updateMetadata(DocumentId id, DocumentMetadata metadata) {
-        throw new DomainException("v1 不支持在线修改已完成文档的元数据，请通过重新摄入新版本完成时效变更");
+    public Document updateMetadata(DocumentId id, PatchDocumentMetadata patch) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+
+        String before = snapshotMetadata(document);
+        document.patchMetadata(patch);
+        document.markIndexStale();
+        document = documentRepository.save(document);
+        createIndexRefreshJob(document);
+        auditEvent(document, "METADATA_UPDATED", before, snapshotMetadata(document), null);
+        return document;
     }
 
     @Override
     public void supersede(DocumentId oldDocumentId, DocumentId newDocumentId, LocalDate effectiveTo) {
-        throw new DomainException("v1 不支持在线替代文档，请通过上传新版本并指定 supersedesDocumentId 完成时效变更");
+        Document oldDoc = documentRepository.findById(oldDocumentId)
+                .orElseThrow(() -> new DomainException("未找到旧文档: " + oldDocumentId.value()));
+        Document newDoc = documentRepository.findById(newDocumentId)
+                .orElseThrow(() -> new DomainException("未找到新文档: " + newDocumentId.value()));
+        KnowledgeBase kb = requireKnowledgeBase(oldDoc.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+
+        if (!oldDoc.getKnowledgeBaseId().equals(newDoc.getKnowledgeBaseId())) {
+            throw new DomainException("被替代文档与替代文档必须属于同一知识库");
+        }
+        if (oldDoc.getLifecycleStatus() != DocumentLifecycleStatus.ACTIVE) {
+            throw new DomainException("仅 ACTIVE 文档可被替代");
+        }
+        if (newDoc.getStatus() != DocumentStatus.COMPLETED) {
+            throw new DomainException("替代文档必须已完成摄入");
+        }
+
+        String before = snapshotMetadata(oldDoc);
+        oldDoc.supersedeBy(newDoc, effectiveTo);
+        oldDoc.markIndexStale();
+        oldDoc = documentRepository.save(oldDoc);
+        createIndexRefreshJob(oldDoc);
+        auditEvent(oldDoc, "SUPERSEDED", before, snapshotMetadata(oldDoc),
+                "newDocumentId=" + newDocumentId.value());
+    }
+
+    @Override
+    public Document retire(DocumentId id, LocalDate effectiveTo) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+
+        String before = snapshotMetadata(document);
+        document.retire(effectiveTo);
+        document.markIndexStale();
+        document = documentRepository.save(document);
+        createIndexRefreshJob(document);
+        auditEvent(document, "RETIRED", before, snapshotMetadata(document), null);
+        return document;
+    }
+
+    @Override
+    public Document reactivate(DocumentId id) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+
+        String before = snapshotMetadata(document);
+        document.reactivate();
+        document.markIndexStale();
+        document = documentRepository.save(document);
+        createIndexRefreshJob(document);
+        auditEvent(document, "REACTIVATED", before, snapshotMetadata(document), null);
+        return document;
+    }
+
+    @Override
+    public Document reindex(DocumentId id) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_WRITE");
+
+        document.markIndexStale();
+        document = documentRepository.save(document);
+        createIndexRefreshJob(document);
+        auditEvent(document, "INDEX_REFRESH_REQUESTED", snapshotMetadata(document), snapshotMetadata(document), null);
+        return document;
+    }
+
+    @Override
+    public List<Document> getVersionChain(DocumentId id) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_READ");
+
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        List<Document> chain = new ArrayList<>();
+
+        // 向后追溯：当前文档替代了谁
+        Document current = document;
+        while (current.getSupersedesDocumentId() != null && !current.getSupersedesDocumentId().isBlank()) {
+            Optional<Document> prev = documentRepository.findById(new DocumentId(current.getSupersedesDocumentId()));
+            if (prev.isEmpty()) {
+                break;
+            }
+            current = prev.get();
+            if (seen.add(current.getId().value())) {
+                chain.addFirst(current);
+            } else {
+                break; // 防循环
+            }
+        }
+
+        // 加入当前文档
+        if (seen.add(document.getId().value())) {
+            chain.add(document);
+        }
+
+        // 向前追踪：谁替代了当前文档（递归）
+        current = document;
+        while (true) {
+            List<Document> nextDocs = documentRepository.findBySupersedesDocumentId(current.getId())
+                    .stream()
+                    .filter(d -> d.getKnowledgeBaseId().equals(document.getKnowledgeBaseId()))
+                    .toList();
+            if (nextDocs.isEmpty()) {
+                break;
+            }
+            // 通常只有一个后继，取第一个
+            Document next = nextDocs.getFirst();
+            if (!seen.add(next.getId().value())) {
+                break; // 防循环
+            }
+            chain.add(next);
+            current = next;
+        }
+
+        // 辅助分组：canonicalKey 非空时，把同 KB 下同 canonicalKey 的文档也纳入
+        if (document.getCanonicalKey() != null && !document.getCanonicalKey().isBlank()) {
+            for (DocumentLifecycleStatus status : DocumentLifecycleStatus.values()) {
+                List<Document> siblings = documentRepository.findByKnowledgeBaseIdAndCanonicalKeyAndLifecycleStatus(
+                        document.getKnowledgeBaseId(), document.getCanonicalKey(), status);
+                for (Document sib : siblings) {
+                    if (seen.add(sib.getId().value())) {
+                        chain.add(sib);
+                    }
+                }
+            }
+        }
+
+        return chain;
+    }
+
+    @Override
+    public List<GetDocumentAuditEventsUseCase.DocumentAuditEvent> getAuditEvents(DocumentId id) {
+        Document document = documentRepository.findById(id)
+                .orElseThrow(() -> new DomainException("未找到文档: " + id.value()));
+        KnowledgeBase kb = requireKnowledgeBase(document.getKnowledgeBaseId());
+        accessControlPort.checkKnowledgeBaseAccess(kb, "KB_READ");
+
+        return auditEventStorePort.findByDocumentId(id).stream()
+                .map(e -> new GetDocumentAuditEventsUseCase.DocumentAuditEvent(
+                        e.id(),
+                        e.documentId().value(),
+                        e.knowledgeBaseId().value(),
+                        e.actorUserId(),
+                        e.action(),
+                        e.beforeSnapshot(),
+                        e.afterSnapshot(),
+                        e.reason(),
+                        e.createdAt()
+                ))
+                .toList();
+    }
+
+    private void createIndexRefreshJob(Document document) {
+        var job = com.synapse.kb.model.DocumentIndexRefreshJob.create(
+                document.getId(),
+                document.getKnowledgeBaseId(),
+                document.getMetadataVersion()
+        );
+        refreshJobRepository.save(job);
+    }
+
+    private String snapshotMetadata(Document document) {
+        return String.format(
+                "sourceType=%s,canonicalKey=%s,versionLabel=%s,effectiveFrom=%s,effectiveTo=%s," +
+                "lifecycleStatus=%s,authorityLevel=%d,jurisdiction=%s",
+                document.getSourceType(),
+                document.getCanonicalKey(),
+                document.getVersionLabel(),
+                document.getEffectiveFrom(),
+                document.getEffectiveTo(),
+                document.getLifecycleStatus(),
+                document.getAuthorityLevel(),
+                document.getJurisdiction()
+        );
+    }
+
+    private void auditEvent(Document document, String action, String before, String after, String reason) {
+        try {
+            auditEventStorePort.save(new AuditEventStorePort.AuditEvent(
+                    java.util.UUID.randomUUID().toString(),
+                    document.getId(),
+                    document.getKnowledgeBaseId(),
+                    accessControlPort.currentUserId(),
+                    action,
+                    before,
+                    after,
+                    reason,
+                    Instant.now()
+            ));
+        } catch (Exception e) {
+            log.warn("审计日志写入失败 documentId={} action={}", document.getId().value(), action, e);
+        }
     }
 
     private ChatSession resolveChatSession(Query query, KnowledgeBase kb) {

@@ -86,6 +86,86 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
     }
 
     @Override
+    public void refreshStore(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, String documentName,
+                             List<DocumentChunk> chunks, DocumentMetadata metadata) {
+        try {
+            // 1. 记录旧数据
+            List<ChunkIndexDocument> oldChunks = repository.findByKnowledgeBaseIdAndDocumentId(
+                    knowledgeBaseId.value(), documentId.value());
+            long oldTotalTokenCount = oldChunks.stream().mapToInt(ChunkIndexDocument::getTokenCount).sum();
+
+            // 2. 识别新 chunks 中不存在的旧 chunk index（chunk 数量减少时）
+            java.util.Set<Integer> newChunkIndices = chunks.stream()
+                    .map(DocumentChunk::index)
+                    .collect(java.util.stream.Collectors.toSet());
+            List<ChunkIndexDocument> orphanedOldChunks = oldChunks.stream()
+                    .filter(c -> !newChunkIndices.contains(c.getChunkIndex()))
+                    .toList();
+
+            // 3. 写入新 chunk index（saveAll 会覆盖同 ID 的旧记录）
+            List<ChunkIndexDocument> chunkDocuments = chunks.stream()
+                    .map(chunk -> toDocument(knowledgeBaseId, documentId, documentName, chunk, metadata))
+                    .toList();
+            repository.saveAll(chunkDocuments);
+
+            // 4. 删除不再存在的旧 chunk index
+            for (ChunkIndexDocument orphan : orphanedOldChunks) {
+                repository.deleteById(orphan.getId());
+            }
+
+            // 5. 准备新 postings
+            List<ChunkPostingDocument> newPostings = new ArrayList<>();
+            long newTotalTokenCount = 0;
+            for (ChunkIndexDocument chunk : chunkDocuments) {
+                newTotalTokenCount += chunk.getTokenCount();
+                for (Map.Entry<String, Integer> entry : chunk.getTermFrequencies().entrySet()) {
+                    newPostings.add(toPosting(chunk, entry.getKey(), entry.getValue()));
+                }
+            }
+
+            // 6. 获取旧 postings 的所有 _id
+            List<ChunkPostingDocument> oldPostings = mongoTemplate.find(
+                    new Query(Criteria.where("knowledgeBaseId").is(knowledgeBaseId.value())
+                            .and("documentId").is(documentId.value())),
+                    ChunkPostingDocument.class);
+            java.util.Set<String> oldPostingIds = oldPostings.stream()
+                    .map(ChunkPostingDocument::getId)
+                    .collect(java.util.stream.Collectors.toSet());
+
+            // 7. 保存新 postings（upsert：同 ID 覆盖旧记录，不同 ID 新增）
+            for (ChunkPostingDocument posting : newPostings) {
+                mongoTemplate.save(posting);
+            }
+
+            // 8. 按 _id 差集删除旧 postings（精确到每个 posting，不依赖 token 集合）
+            java.util.Set<String> newPostingIds = newPostings.stream()
+                    .map(ChunkPostingDocument::getId)
+                    .collect(java.util.stream.Collectors.toSet());
+            List<String> postingIdsToDelete = oldPostingIds.stream()
+                    .filter(id -> !newPostingIds.contains(id))
+                    .toList();
+            if (!postingIdsToDelete.isEmpty()) {
+                mongoTemplate.remove(
+                        new Query(Criteria.where("_id").in(postingIdsToDelete)),
+                        ChunkPostingDocument.class);
+            }
+
+            // 9. 更新 corpus stats：直接用新总量 - 旧总量的 diff
+            mongoTemplate.upsert(
+                    new Query(Criteria.where("_id").is(knowledgeBaseId.value())),
+                    new Update()
+                            .inc("totalChunks", chunkDocuments.size() - oldChunks.size())
+                            .inc("totalTokenCount", newTotalTokenCount - oldTotalTokenCount),
+                    ChunkCorpusStatsDocument.class
+            );
+
+            invalidateDocumentFrequencyCache(knowledgeBaseId);
+        } catch (Exception e) {
+            throw new DomainException("关键词索引刷新失败", e);
+        }
+    }
+
+    @Override
     public List<ChunkReference> search(KnowledgeBaseId knowledgeBaseId, String query, int topK, RetrievalFilter filter) {
         List<String> queryTokens = tokenize(query);
         if (queryTokens.isEmpty()) {
@@ -175,7 +255,7 @@ public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
 
     @Override
     public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {
-        throw new UnsupportedOperationException("v1 不支持在线修改关键词索引元数据，请通过重新摄入新版本完成时效变更");
+        // v2 使用异步索引刷新任务，不在请求线程中直接更新
     }
 
     private ChunkIndexDocument toDocument(KnowledgeBaseId knowledgeBaseId, DocumentId documentId,
