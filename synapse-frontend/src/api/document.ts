@@ -1,6 +1,7 @@
 import client from './client'
 import type { Document, DocumentUploadMetadata, PatchDocumentMetadata, DocumentAuditEvent } from '@/types'
 
+/** 文档列表筛选条件，全部可选。 */
 export interface DocumentListFilters {
   sourceType?: string
   lifecycleStatus?: string
@@ -8,6 +9,7 @@ export interface DocumentListFilters {
   canonicalKey?: string
 }
 
+/** 获取知识库下的文档列表，支持按时效状态、索引状态等筛选。 */
 export async function listDocuments(knowledgeBaseId: string, filters?: DocumentListFilters): Promise<Document[]> {
   const params = new URLSearchParams()
   if (filters?.sourceType) params.append('sourceType', filters.sourceType)

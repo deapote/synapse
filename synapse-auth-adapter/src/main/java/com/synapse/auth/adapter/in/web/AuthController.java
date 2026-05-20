@@ -8,6 +8,10 @@ import com.synapse.auth.port.in.AuthenticationUseCase;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
+/**
+ * 认证 Web 适配器。负责登录、注销、当前用户信息查询的 HTTP 接入。
+ * DTO 转换和 Sa-Token 上下文桥接在此层完成，不写领域规则。
+ */
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {

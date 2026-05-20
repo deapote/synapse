@@ -47,6 +47,10 @@ public record ChatMessage(
         }
     }
 
+    /**
+     * 创建新消息，自动分配会话内的下一个 sequence。
+     * 引用片段由 RAG 检索结果填充，user 消息无引用。
+     */
     public static ChatMessage create(
             ChatSession session,
             ChatRole role,

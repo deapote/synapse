@@ -4,6 +4,7 @@ import com.synapse.shared.exception.DomainException;
 
 import java.util.UUID;
 
+/** 用户标识值对象。 */
 public record UserId(String value) {
     public UserId {
         if (value == null || value.isBlank()) {

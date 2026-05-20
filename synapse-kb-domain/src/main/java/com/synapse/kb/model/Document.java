@@ -11,6 +11,16 @@ import java.util.Set;
 
 /**
  * 文档聚合根。文档独立于知识库聚合，通过 {@code knowledgeBaseId} 关联。
+ *
+ * <p>三类状态严格分离：</p>
+ * <ul>
+ *   <li>{@link DocumentStatus} — 摄入状态机（PENDING→PROCESSING→COMPLETED/FAILED），控制后台处理生命周期</li>
+ *   <li>{@link DocumentLifecycleStatus} — 业务时效状态（ACTIVE/SUPERSEDED/RETIRED），控制检索时是否可作为回答依据</li>
+ *   <li>{@link DocumentIndexStatus} — 索引同步状态（SYNCED/STALE/REFRESHING/FAILED），控制 Milvus/Mongo 索引与 Mongo 权威状态的一致性</li>
+ * </ul>
+ *
+ * <p>时效规则：{@code effectiveTo} 为排他结束日，即 {@code effectiveTo=2025-01-01} 表示当天起资料无效。
+ * {@code effectiveFrom} 与 {@code sourceType} 不允许清空。</p>
  */
 public class Document {
     private final DocumentId id;
@@ -70,6 +80,10 @@ public class Document {
         this.indexStatus = DocumentIndexStatus.SYNCED;
     }
 
+    /**
+     * 创建新文档。初始状态为 PENDING，自动生成上传时间作为默认生效日期，
+     * 资料类型默认为 GENERAL。
+     */
     public static Document create(KnowledgeBaseId knowledgeBaseId, String fileName, String fileType, long fileSize, String contentHash) {
         return create(knowledgeBaseId, fileName, fileType, fileSize, contentHash, new DocumentMetadata());
     }
@@ -146,10 +160,18 @@ public class Document {
         return doc;
     }
 
+    /**
+     * 按状态机规则转换文档处理状态。
+     * 进入 PROCESSING 时自动记录开始时间；进入 COMPLETED/FAILED 时记录完成时间。
+     */
     public void transitionTo(DocumentStatus newStatus) {
         transitionTo(newStatus, null);
     }
 
+    /**
+     * 按状态机规则转换文档处理状态，并可记录失败原因。
+     * 状态流转图：PENDING → PROCESSING → (COMPLETED | FAILED)；FAILED → PENDING。
+     */
     public void transitionTo(DocumentStatus newStatus, String failureReason) {
         Set<DocumentStatus> validNext = VALID_TRANSITIONS.get(this.status);
         if (validNext == null || !validNext.contains(newStatus)) {
@@ -169,6 +191,7 @@ public class Document {
         }
     }
 
+    /** 重置为可重新摄入状态，清空之前的处理痕迹。 */
     public void retry() {
         transitionTo(DocumentStatus.PENDING);
         this.processingStartAt = null;
@@ -184,6 +207,10 @@ public class Document {
         this.chunkCount = count;
     }
 
+    /**
+     * 判断文档在指定日期是否可作为检索依据。
+     * 已 RETIRED 的文档始终无效；{@code effectiveTo} 为排他结束日。
+     */
     public boolean isEffectiveOn(LocalDate date) {
         if (date == null) {
             return false;
@@ -262,6 +289,10 @@ public class Document {
         this.effectiveTo = null;
     }
 
+    /**
+     * 在线补丁 metadata。{@code sourceType} 与 {@code effectiveFrom} 不允许清空；
+     * 提交前进行完整校验，失败时抛出 DomainException 保证聚合一致性。
+     */
     public void patchMetadata(PatchDocumentMetadata patch) {
         if (patch == null) {
             return;
@@ -323,16 +354,22 @@ public class Document {
         this.jurisdiction = candidateJurisdiction;
     }
 
+    /**
+     * 标记索引待刷新。metadata 变更后调用，递增 metadataVersion 使刷新任务可识别
+     * "此变更是否已被同步到索引"。
+     */
     public void markIndexStale() {
         this.indexStatus = DocumentIndexStatus.STALE;
         this.metadataVersion++;
     }
 
+/** 标记索引刷新开始，清除之前的失败原因。 */
     public void markIndexRefreshing() {
         this.indexStatus = DocumentIndexStatus.REFRESHING;
         this.lastIndexFailureReason = null;
     }
 
+    /** 索引刷新成功后标记同步完成，使 {@code indexedMetadataVersion} 追上当前 {@code metadataVersion}。 */
     public void markIndexSynced() {
         this.indexStatus = DocumentIndexStatus.SYNCED;
         this.indexedMetadataVersion = this.metadataVersion;
@@ -340,15 +377,21 @@ public class Document {
         this.lastIndexFailureReason = null;
     }
 
+    /** 标记索引刷新失败，保留失败原因供运维排查。 */
     public void markIndexFailed(String reason) {
         this.indexStatus = DocumentIndexStatus.FAILED;
         this.lastIndexFailureReason = reason;
     }
 
+    /** 判断索引是否需要刷新：STALE（metadata 已变更）或 FAILED（上次刷新失败）均需重新同步。 */
     public boolean needsIndexRefresh() {
         return this.indexStatus == DocumentIndexStatus.STALE || this.indexStatus == DocumentIndexStatus.FAILED;
     }
 
+    /**
+     * 被新文档替代。旧文档 lifecycleStatus 变为 SUPERSEDED，并设置排他失效日期。
+     * 仅 ACTIVE 文档可被替代，且新旧文档必须属于同一知识库。
+     */
     public void supersedeBy(Document newDocument, LocalDate effectiveTo) {
         if (newDocument == null) {
             throw new DomainException("替代文档不能为空");

@@ -6,6 +6,12 @@ import java.time.Instant;
 import java.util.EnumSet;
 import java.util.Set;
 
+/**
+ * 用户账号聚合根。
+ *
+ * <p>领域层不依赖 Spring、Sa-Token、BCrypt。密码永远只保存哈希，不保存明文。</p>
+ * <p>账号状态由 {@code enabled} 控制；角色集合不能为空，默认至少包含 {@code USER}。</p>
+ */
 public class UserAccount {
     private final UserId id;
     private String username;
@@ -26,6 +32,10 @@ public class UserAccount {
         this.createdAt = createdAt;
     }
 
+    /**
+     * 创建新用户。角色为空时默认赋予 {@code USER}。
+     * {@code passwordHash} 必须是已哈希值，不能是明文密码。
+     */
     public static UserAccount create(String username, String displayName, String passwordHash, Set<RoleName> roles) {
         validateUsername(username);
         if (passwordHash == null || passwordHash.isBlank()) {
@@ -37,6 +47,7 @@ public class UserAccount {
         return new UserAccount(UserId.generate(), username.trim(), displayName, passwordHash, safeRoles, true, Instant.now());
     }
 
+    /** 仅供仓储层重建聚合根使用。 */
     public static UserAccount reconstruct(UserId id, String username, String displayName, String passwordHash,
                                           Set<RoleName> roles, boolean enabled, Instant createdAt) {
         return new UserAccount(id, username, displayName, passwordHash,
@@ -44,6 +55,7 @@ public class UserAccount {
                 enabled, createdAt);
     }
 
+    /** 更新密码哈希。入参必须是已哈希值。 */
     public void changePasswordHash(String passwordHash) {
         if (passwordHash == null || passwordHash.isBlank()) {
             throw new DomainException("密码哈希不能为空");
@@ -51,6 +63,7 @@ public class UserAccount {
         this.passwordHash = passwordHash;
     }
 
+    /** 重新分配角色集合。不能为空。 */
     public void assignRoles(Set<RoleName> roles) {
         if (roles == null || roles.isEmpty()) {
             throw new DomainException("用户至少需要一个角色");
@@ -58,14 +71,17 @@ public class UserAccount {
         this.roles = EnumSet.copyOf(roles);
     }
 
+    /** 启用账号。 */
     public void enable() {
         this.enabled = true;
     }
 
+    /** 禁用账号。禁用后无法登录，但不删除数据。 */
     public void disable() {
         this.enabled = false;
     }
 
+    /** 判断用户是否拥有指定角色。 */
     public boolean hasRole(RoleName role) {
         return roles.contains(role);
     }

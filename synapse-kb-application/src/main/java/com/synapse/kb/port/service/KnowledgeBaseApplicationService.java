@@ -410,6 +410,10 @@ public class KnowledgeBaseApplicationService implements
         }
     }
 
+    /**
+     * 执行单条摄入任务。摄入成功后会尝试替代旧版本（如有），替代失败只记录日志，
+     * 不影响新文档的稳定状态。
+     */
     private void runIngestionTask(IngestionJob job) {
         Document document = documentRepository.findById(job.getDocumentId()).orElse(null);
         if (document == null) {
@@ -435,6 +439,10 @@ public class KnowledgeBaseApplicationService implements
         }
     }
 
+    /**
+     * 处理摄入失败。未达最大重试次数时标记为 RETRYING 并设置退避时间；
+     * 否则将文档和任务均标记为最终失败。
+     */
     private void handleIngestionFailure(IngestionJob job, Document document, Exception e) {
         String reason = safeFailureReason(e);
         if (job.getAttempts() >= ingestionMaxAttempts) {
@@ -655,6 +663,11 @@ public class KnowledgeBaseApplicationService implements
         return null;
     }
 
+    /**
+     * 执行混合检索：Milvus 向量召回与 Mongo BM25 关键词召回并行执行，
+     * 然后合并重排、按 Mongo 权威状态兜底过滤、按 canonicalKey 去重。
+     * 所有召回均限定 knowledgeBaseId，不跨库查询。
+     */
     private List<ChunkReference> retrieveReferences(Query query, PreparedQuery preparedQuery, LocalDate asOfDate) {
         RetrievalFilter filter = new RetrievalFilter(asOfDate, query.sourceType(), query.jurisdiction());
         CompletableFuture<List<ChunkReference>> vectorFuture = CompletableFuture.supplyAsync(
@@ -670,6 +683,12 @@ public class KnowledgeBaseApplicationService implements
         return deduplicateByCanonicalKey(filtered);
     }
 
+    /**
+     * 用 Mongo 权威文档状态对检索结果做最终兜底过滤。
+     * 排除索引未同步（非 SYNCED）的文档；校验 effective 日期、sourceType、jurisdiction；
+     * 并用 Mongo 真实 metadata 覆盖索引中的旧值，保证引用信息的准确性。
+     * 此步骤必须在 topK 截断前执行。
+     */
     private List<ChunkReference> filterByDocumentEffectiveDate(List<ChunkReference> references, Query query, LocalDate asOfDate) {
         if (references.isEmpty()) {
             return references;
@@ -977,6 +996,7 @@ public class KnowledgeBaseApplicationService implements
                 .toList();
     }
 
+    /** 为文档创建索引刷新任务，确保 metadata 变更异步同步到检索索引。 */
     private void createIndexRefreshJob(Document document) {
         var job = com.synapse.kb.model.DocumentIndexRefreshJob.create(
                 document.getId(),
@@ -986,6 +1006,7 @@ public class KnowledgeBaseApplicationService implements
         refreshJobRepository.save(job);
     }
 
+    /** 将文档时效 metadata 序列化为审计日志的快照字符串。 */
     private String snapshotMetadata(Document document) {
         return String.format(
                 "sourceType=%s,canonicalKey=%s,versionLabel=%s,effectiveFrom=%s,effectiveTo=%s," +
@@ -1143,6 +1164,10 @@ public class KnowledgeBaseApplicationService implements
         }
     }
 
+    /**
+     * 融合向量与关键词召回结果，按配置的权重加权打分后降序排列。
+     * 同一片段同时被两种方式召回时，取加权最高分。
+     */
     private List<ChunkReference> mergeAndRerank(List<ChunkReference> vectorResults, List<ChunkReference> keywordResults) {
         Map<String, RankedReference> merged = new LinkedHashMap<>();
         for (ChunkReference reference : vectorResults) {
@@ -1160,6 +1185,10 @@ public class KnowledgeBaseApplicationService implements
                 .toList();
     }
 
+    /**
+     * 按 canonicalKey 去重：同 key 只保留权威等级最高、生效日期最新的片段。
+     * 无 canonicalKey 的片段不参与去重，直接保留。最后在 topK 范围内截断。
+     */
     private List<ChunkReference> deduplicateByCanonicalKey(List<ChunkReference> ranked) {
         Map<String, ChunkReference> bestByCanonicalKey = new LinkedHashMap<>();
         List<ChunkReference> result = new ArrayList<>();

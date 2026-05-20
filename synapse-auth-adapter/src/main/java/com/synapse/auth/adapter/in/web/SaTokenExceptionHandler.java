@@ -10,6 +10,10 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import java.time.Instant;
 import java.util.Map;
 
+/**
+ * 全局认证异常处理器。将 Sa-Token 的未登录、无权限异常转换为结构化 HTTP 响应，
+ * 不暴露内部堆栈给前端。
+ */
 @ControllerAdvice
 public class SaTokenExceptionHandler {
     @ExceptionHandler(NotLoginException.class)

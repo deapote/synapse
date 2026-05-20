@@ -11,6 +11,10 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.index.Index;
 
+/**
+ * 认证 MongoDB 索引初始化器。启动时确保 username 唯一索引已创建。
+ * 若 MongoDB 不可用则静默跳过，不影响应用启动。
+ */
 @Configuration
 public class AuthMongoIndexInitializer {
     private static final Logger log = LoggerFactory.getLogger(AuthMongoIndexInitializer.class);
@@ -20,7 +24,7 @@ public class AuthMongoIndexInitializer {
         return args -> {
             try {
                 mongoTemplate.indexOps(UserAccountDocument.class)
-                        .ensureIndex(new Index().on("username", Sort.Direction.ASC).unique().named("uk_auth_username"));
+                        .createIndex(new Index().on("username", Sort.Direction.ASC).unique().named("uk_auth_username"));
             } catch (DataAccessException e) {
                 log.warn("MongoDB 不可用，跳过认证索引初始化: {}", e.getMessage());
             }

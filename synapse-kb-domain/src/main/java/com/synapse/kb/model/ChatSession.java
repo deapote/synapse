@@ -4,7 +4,11 @@ import com.synapse.shared.exception.DomainException;
 
 import java.time.Instant;
 
-/** 用户在某个知识库下的一段聊天会话。 */
+/**
+ * 用户在某个知识库下的一段聊天会话。
+ * 按 {@code ownerUserId + knowledgeBaseId} 隔离，ADMIN 权限也不得跨用户访问会话内容。
+ * 聊天记忆只保留摘要和最近若干条消息，全量历史由持久化层存储，不会直接放入 prompt。
+ */
 public class ChatSession {
 
     private final ChatSessionId id;
@@ -69,12 +73,20 @@ public class ChatSession {
                 summarizedUntilSequence, messageCount, createdAt, updatedAt);
     }
 
+    /**
+     * 分配下一个消息序号，同时更新会话时间戳。
+     * 序号从 1 开始递增，保证单会话内消息严格有序。
+     */
     public long nextSequence() {
         messageCount++;
         updatedAt = Instant.now();
         return messageCount;
     }
 
+    /**
+     * 记录已持久化的消息序号。用于重建会话时恢复最新序号，
+     * 防止并发写入导致序号冲突。
+     */
     public void recordMessageSequence(long sequence) {
         if (sequence <= 0) {
             throw new DomainException("消息序号必须大于 0");
@@ -83,12 +95,20 @@ public class ChatSession {
         updatedAt = Instant.now();
     }
 
+    /**
+     * 压缩旧历史为摘要。{@code summarizedUntilSequence} 表示已压缩到的消息位置，
+     * 后续 prompt 构建时只需携带此位置之后的原始消息。
+     */
     public void updateSummary(String summary, long summarizedUntilSequence) {
         this.summary = summary == null ? "" : summary.strip();
         this.summarizedUntilSequence = Math.max(this.summarizedUntilSequence, summarizedUntilSequence);
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * 首次用户提问后自动将会话标题从"新对话"替换为问题前 30 字。
+     * 仅当标题仍为默认值时生效，避免覆盖用户手动修改的标题。
+     */
     public void renameFromUserQuestion(String question) {
         if (!"新对话".equals(title) || question == null || question.isBlank()) {
             return;

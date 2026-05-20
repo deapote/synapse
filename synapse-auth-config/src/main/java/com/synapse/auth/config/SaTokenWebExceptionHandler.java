@@ -17,6 +17,11 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
+/**
+ * WebFlux 全局异常处理器。将 Sa-Token 的未登录、无权限异常转换为结构化 JSON 响应。
+ * 优先级最高，确保在 Spring 默认异常处理之前拦截认证相关异常。
+ * 不暴露内部堆栈给前端。
+ */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class SaTokenWebExceptionHandler implements WebExceptionHandler {

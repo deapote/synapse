@@ -11,6 +11,10 @@ import reactor.core.publisher.Mono;
 
 import java.util.List;
 
+/**
+ * 用户管理 Web 适配器。提供用户/角色的管理接口，所有操作均校验 {@code AUTH_ADMIN} 权限。
+ * DTO 转换在此层完成，不写领域规则。
+ */
 @RestController
 @RequestMapping("/api/admin")
 public class UserAdminController {

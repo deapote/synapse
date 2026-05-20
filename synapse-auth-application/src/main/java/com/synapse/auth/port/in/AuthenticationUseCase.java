@@ -7,6 +7,10 @@ import com.synapse.auth.model.UserId;
 import java.time.Instant;
 import java.util.Set;
 
+/**
+ * 认证入站端口。定义登录、注销、当前用户查询用例。
+ * 实现类由 {@link com.synapse.auth.port.service.AuthApplicationService} 提供。
+ */
 public interface AuthenticationUseCase {
     LoginResult login(LoginCommand command);
 

@@ -18,6 +18,10 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * 文档索引刷新任务 worker。定时轮询可认领的刷新任务，使用信号量限制并发数。
+ * 支持虚拟线程，默认并发数为 2。失败任务按指数退避重试。
+ */
 @Component
 public class DocumentIndexRefreshJobWorker implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(DocumentIndexRefreshJobWorker.class);

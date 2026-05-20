@@ -7,6 +7,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.Instant;
 import java.util.Set;
 
+/**
+ * MongoDB 用户账号持久化实体。对应 {@code auth_users} 集合。
+ * 只存密码哈希，不保存明文。username 建有唯一索引。
+ */
 @Document(collection = "auth_users")
 public class UserAccountDocument {
     @Id

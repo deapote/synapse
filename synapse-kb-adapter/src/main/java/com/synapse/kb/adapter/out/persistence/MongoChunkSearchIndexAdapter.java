@@ -29,7 +29,17 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** MongoDB 轻量 BM25 分块检索索引。 */
+/**
+ * MongoDB 轻量 BM25 分块检索索引适配器。
+ *
+ * <p>每个 chunk 拆分为 posting 反排表，支持按 effective 日期、lifecycleStatus、
+ * sourceType、jurisdiction 做硬过滤。BM25 参数固定为 K1=1.5, B=0.75。</p>
+ *
+ * <p>安全刷新策略：refreshStore 先写入新 postings，再按 _id 差集删除旧 postings。
+ * 不采用 delete-first，避免刷新失败时 keywords 索引完全丢失导致检索空窗。
+ * 旧 postings 在刷新过程中仍可供检索，虽然可能返回部分过期 metadata，
+ * 但最终会在 application 层的 filterByDocumentEffectiveDate 中被 Mongo 权威状态兜底过滤。</p>
+ */
 @Component
 public class MongoChunkSearchIndexAdapter implements ChunkSearchIndexPort {
 

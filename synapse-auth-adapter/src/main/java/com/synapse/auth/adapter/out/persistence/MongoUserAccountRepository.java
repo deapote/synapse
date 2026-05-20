@@ -17,6 +17,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 用户账号仓储适配器。将领域 {@link UserAccount} 与 MongoDB {@link UserAccountDocument} 映射，
+ * 处理 username 唯一索引冲突的异常转换。
+ */
 @Component
 public class MongoUserAccountRepository implements UserAccountRepository {
     private final UserAccountMongoRepository mongoRepository;

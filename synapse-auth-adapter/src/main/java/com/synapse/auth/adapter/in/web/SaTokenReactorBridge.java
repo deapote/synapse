@@ -4,6 +4,11 @@ import cn.dev33.satoken.reactor.context.SaReactorHolder;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+/**
+ * Sa-Token Reactor 上下文桥接器。
+ * 将阻塞的 application 层调用安全地桥接到 WebFlux 响应式线程，
+ * 避免线程切换导致 Sa-Token 上下文丢失。
+ */
 final class SaTokenReactorBridge {
 
     private SaTokenReactorBridge() {

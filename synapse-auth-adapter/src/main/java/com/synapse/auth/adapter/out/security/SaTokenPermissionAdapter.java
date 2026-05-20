@@ -9,6 +9,11 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
+/**
+ * Sa-Token 权限数据源适配器。根据用户 ID 从仓储查询角色和权限，
+ * 供 Sa-Token 的注解鉴权（如 {@code @SaCheckPermission}）使用。
+ * 只返回已启用用户的权限，禁用用户视为无权限。
+ */
 @Component
 public class SaTokenPermissionAdapter implements StpInterface {
     private final UserAccountRepository userRepository;

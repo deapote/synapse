@@ -8,6 +8,10 @@ import com.synapse.auth.repository.UserAccountRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/**
+ * Auth Bean 组装配置。将 domain/application/adapter 层对象装配为 Spring Bean，
+ * 不写业务流程。具体持久化和安全适配器由各自模块的 {@code @Component} 自动扫描。
+ */
 @Configuration
 public class AuthBeanConfig {
     @Bean

@@ -5,6 +5,10 @@ import com.synapse.shared.exception.DomainException;
 import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * 后台文档摄入任务。负责从 GridFS 读取原始内容、切分文本、生成向量并写入 Milvus 与 Mongo。
+ * 采用租约（lease）机制防止多 worker 并发竞争同一任务。
+ */
 public class IngestionJob {
     private final String id;
     private final DocumentId documentId;
@@ -37,6 +41,9 @@ public class IngestionJob {
         this.updatedAt = updatedAt;
     }
 
+    /**
+     * 创建新摄入任务。初始状态为 QUEUED，由调度器按创建时间顺序分派。
+     */
     public static IngestionJob create(DocumentId documentId, KnowledgeBaseId knowledgeBaseId, String contentObjectId) {
         if (contentObjectId == null || contentObjectId.isBlank()) {
             throw new DomainException("摄入任务内容对象ID不能为空");
@@ -54,12 +61,16 @@ public class IngestionJob {
                 leaseOwner, leaseExpiresAt, failureReason, createdAt, updatedAt);
     }
 
+    /** 标记摄入成功，清理租约。 */
     public void markSucceeded() {
         this.status = IngestionJobStatus.SUCCEEDED;
         clearLease();
         touch();
     }
 
+    /**
+     * 标记需重试。失败原因会被记录，任务将在 {@code nextRunAt} 之后再次可被认领。
+     */
     public void markRetrying(String failureReason, Instant nextRunAt) {
         this.status = IngestionJobStatus.RETRYING;
         this.failureReason = failureReason;
@@ -68,6 +79,7 @@ public class IngestionJob {
         touch();
     }
 
+    /** 标记最终失败，不再自动重试，清理租约。 */
     public void markFailed(String failureReason) {
         this.status = IngestionJobStatus.FAILED;
         this.failureReason = failureReason;
@@ -75,6 +87,7 @@ public class IngestionJob {
         touch();
     }
 
+    /** 释放租约，使任务可被其他 worker 认领。 */
     public void clearLease() {
         this.leaseOwner = null;
         this.leaseExpiresAt = null;

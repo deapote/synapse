@@ -13,6 +13,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 角色定义仓储适配器。将领域 {@link RoleDefinition} 与 MongoDB {@link RoleDefinitionDocument} 映射。
+ */
 @Component
 public class MongoRoleDefinitionRepository implements RoleDefinitionRepository {
     private final RoleDefinitionMongoRepository mongoRepository;

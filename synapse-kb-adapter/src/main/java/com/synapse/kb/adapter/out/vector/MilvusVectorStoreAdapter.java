@@ -40,6 +40,15 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * Milvus v3 collection 向量存储适配器。
+ *
+ * <p>使用 HNSW 索引（COSINE 度量），collection 按 knowledgeBaseId 分区。
+ * 所有检索操作均通过 scalar filter 执行硬过滤：effective 日期范围、lifecycleStatus、
+ * sourceType、jurisdiction。v1 不做无补偿 delete + reinsert，metadata 变更通过
+ * {@link com.synapse.kb.model.DocumentIndexRefreshJob} 异步刷新；旧行在检索阶段
+ * 由 Mongo 权威状态兜底过滤保证正确性。</p>
+ */
 @Component
 public class MilvusVectorStoreAdapter implements VectorStorePort {
 
@@ -114,7 +123,7 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
             return;
         }
 
-        CreateCollectionReq.CollectionSchema schema = client.createSchema();
+        CreateCollectionReq.CollectionSchema schema = CreateCollectionReq.CollectionSchema.builder().build();
         schema.addField(AddFieldReq.builder()
                 .fieldName("id").dataType(DataType.VarChar)
                 .isPrimaryKey(true).maxLength(64).build());
@@ -262,8 +271,12 @@ public class MilvusVectorStoreAdapter implements VectorStorePort {
     }
 
     @Override
+    /**
+     * v1 不支持在线更新已存储向量的 scalar metadata。
+     * metadata 变更由 {@code DocumentIndexRefreshJob} 异步处理。
+     */
     public void updateDocumentMetadata(KnowledgeBaseId knowledgeBaseId, DocumentId documentId, DocumentMetadata metadata) {
-        // v2 使用异步索引刷新任务，不在请求线程中直接更新
+        // v1 使用异步索引刷新任务，不在请求线程中直接更新
     }
 
     private void insert(String collection, List<JsonObject> data) {

@@ -19,6 +19,10 @@ import org.springframework.dao.DataAccessException;
 import java.util.Arrays;
 import java.util.EnumSet;
 
+/**
+ * 认证种子数据初始化器。开发/测试环境自动创建 ADMIN / USER 角色和默认管理员账号。
+ * 生产环境若未覆盖默认密码则抛异常阻止启动。不在注释中暴露默认密码明文。
+ */
 @Configuration
 public class AuthDataInitializer {
     private static final Logger log = LoggerFactory.getLogger(AuthDataInitializer.class);

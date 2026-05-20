@@ -18,6 +18,17 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 认证与授权用例编排器。
+ *
+ * <p>应用层只通过端口依赖外部能力：
+ * {@link PasswordHasherPort} 负责密码哈希校验，{@link LoginSessionPort} 负责登录会话抽象。
+ * 不直接依赖 Web/Mongo/Sa-Token/BCrypt 实现。</p>
+ *
+ * <p>管理接口（createUser、assignRoles、setEnabled、assignRolePermissions）必须校验
+ * {@code AUTH_ADMIN} 权限，该检查由 Web 层通过 {@link com.synapse.kb.port.out.AccessControlPort}
+ * 在调用前完成。</p>
+ */
 public class AuthApplicationService implements AuthenticationUseCase, UserAdminUseCase {
     private final UserAccountRepository userRepository;
     private final RoleDefinitionRepository roleRepository;
@@ -34,6 +45,10 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
         this.loginSession = loginSession;
     }
 
+    /**
+     * 登录认证。查找用户后通过 {@link PasswordHasherPort} 校验密码，
+     * 成功后创建登录会话。不区分"用户不存在"与"密码错误"，统一返回相同错误信息防止枚举。
+     */
     @Override
     public LoginResult login(LoginCommand command) {
         if (command.username() == null || command.username().isBlank()) {
@@ -52,11 +67,13 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
                 user.getRoles(), permissionsOf(user));
     }
 
+    /** 注销当前登录会话。 */
     @Override
     public void logout() {
         loginSession.logout();
     }
 
+    /** 获取当前登录用户信息。未登录时抛出 DomainException。 */
     @Override
     public CurrentUser currentUser() {
         UserId userId = loginSession.currentUserId()
@@ -67,6 +84,10 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
                 user.getRoles(), permissionsOf(user), user.getCreatedAt());
     }
 
+    /**
+     * 创建用户。密码明文通过 {@link PasswordHasherPort} 哈希后存入。
+     * 角色为空时默认赋予 {@code USER}。
+     */
     @Override
     public UserView createUser(CreateUserCommand command) {
         String username = command.username() == null ? null : command.username().trim();
@@ -92,6 +113,7 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
         return userRepository.findAll(page, size).stream().map(this::toView).toList();
     }
 
+    /** 重新分配用户角色。 */
     @Override
     public UserView assignRoles(String userId, Set<RoleName> roles) {
         UserAccount user = userRepository.findById(new UserId(userId))
@@ -100,6 +122,7 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
         return toView(userRepository.save(user));
     }
 
+    /** 启用或禁用用户账号。 */
     @Override
     public UserView setEnabled(String userId, boolean enabled) {
         UserAccount user = userRepository.findById(new UserId(userId))
@@ -112,6 +135,7 @@ public class AuthApplicationService implements AuthenticationUseCase, UserAdminU
         return toView(userRepository.save(user));
     }
 
+    /** 分配角色权限。角色不存在时自动创建。 */
     @Override
     public RoleView assignRolePermissions(RoleName roleName, Set<AuthPermission> permissions) {
         RoleDefinition role = roleRepository.findByName(roleName)
