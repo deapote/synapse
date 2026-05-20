@@ -12,7 +12,7 @@
 |:---|:---|
 | 后端开发 | `overview/architecture-overview`、`design/ports`、`ingestion/application`、`query/application` |
 | 前端开发 | `reference/api/*`、`chat/adapter-in`、`query/adapter-in` |
-| 运维部署 | `deployment/local`、`deployment/production-notes`、`reference/configuration` |
+| 运维部署 | `deployment/local`、`deployment/mineru-local`、`deployment/production-notes`、`reference/configuration` |
 | 安全审查 | `security/auth`、`security/rag`、`security/cors` |
 | RAG 检索调优 | `design/hybrid-retrieval`、`query/application`、`query/adapter-out` |
 | 资料时效性治理 | `ingestion/domain`、`ingestion/application`、`query/application`、`design/hybrid-retrieval`、`reference/api/document`、`reference/api/streaming-query` |
@@ -27,7 +27,7 @@
 - **query**：Query 改写、`asOfDate`、混合检索、时效过滤、Prompt 组装、SSE 输出
 - **chat**：聊天会话、消息持久化、引用保存、摘要记忆
 - **design**：端口设计、混合检索、分块算法、Reactive 桥接、前端架构等横向专题
-- **deployment**：本地和生产部署注意事项
+- **deployment**：本地、MinerU 解析服务和生产部署注意事项
 - **reference**：API、配置、目录、错误码、术语
 - **security**：认证、RAG Prompt 安全、CORS
 
@@ -40,6 +40,7 @@
 - 在线 metadata 编辑使用 `PatchValue<T>` 三态语义（`unset`/`set`/`clear`），`sourceType` 和 `effectiveFrom` 不允许清空。
 - 所有治理操作（patch metadata、supersede、retire、reactivate、reindex）都会标记索引为 `STALE`，由后台 `DocumentIndexRefreshJobWorker` 异步刷新。
 - Mongo `Document` 是权威状态，Milvus/Mongo chunk index 是派生索引；索引刷新采用异步任务保证最终一致性。
+- 文档解析通过 `DocumentParserPort` 抽象，当前默认 provider 为外部 MinerU 服务，失败时可回退 Apache Tika。
 - `effectiveTo` 是排他结束日：`effectiveTo=2025-01-01` 表示 2025-01-01 当天起旧资料无效。
 - 旧 collection / 存量数据需要重新摄入或迁移到 v3，否则不能保证完整时效过滤。
 

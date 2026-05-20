@@ -1,0 +1,200 @@
+---
+title: MinerU 本地解析服务
+description: 本地部署 MinerU pipeline 服务并接入 Synapse 文档摄入
+---
+
+# 部署 —— MinerU 本地解析服务
+
+Synapse 默认通过 `DocumentParserPort` 调用文档解析能力。当前推荐把 MinerU 部署为 Synapse 仓库同级目录下的独立服务：
+
+```text
+/Users/admin/codeProject/
+├── synapse/   # Java + Vue 主项目
+└── mineru/    # Python MinerU API、pipeline 模型、日志和脚本
+```
+
+这种方式不把 MinerU 源码、Python 依赖或模型文件嵌入 Synapse 仓库。Synapse 只通过 HTTP 调用 `mineru-api`，失败时可回退到 Apache Tika。
+
+## 本地目录
+
+```text
+/Users/admin/codeProject/mineru/
+├── .venv/
+├── models/
+│   ├── modelscope/
+│   └── huggingface/
+├── logs/
+│   └── mineru-api.log
+├── mineru.json
+├── mineru-api.pid
+├── run-mineru-api.sh
+├── start-mineru.sh
+└── stop-mineru.sh
+```
+
+pipeline 模型固定缓存到：
+
+```text
+/Users/admin/codeProject/mineru/models/modelscope/models/OpenDataLab/PDF-Extract-Kit-1___0
+```
+
+## 依赖安装
+
+```bash
+brew install python@3.12 uv
+```
+
+验证：
+
+```bash
+/opt/homebrew/bin/python3.12 --version
+/opt/homebrew/bin/uv --version
+```
+
+## 安装 MinerU
+
+```bash
+/opt/homebrew/bin/uv venv --python /opt/homebrew/bin/python3.12 /Users/admin/codeProject/mineru/.venv
+
+/opt/homebrew/bin/uv pip install -U "mineru[all]" \
+  -i https://mirrors.aliyun.com/pypi/simple \
+  --python /Users/admin/codeProject/mineru/.venv/bin/python
+```
+
+验证命令存在：
+
+```bash
+/Users/admin/codeProject/mineru/.venv/bin/mineru-api --help
+/Users/admin/codeProject/mineru/.venv/bin/mineru-models-download --help
+```
+
+## 下载 Pipeline 模型
+
+模型下载必须显式指定缓存目录，避免落到默认 `~/.cache`：
+
+```bash
+MINERU_MODEL_SOURCE=modelscope \
+MODELSCOPE_CACHE=/Users/admin/codeProject/mineru/models/modelscope \
+HF_HOME=/Users/admin/codeProject/mineru/models/huggingface \
+/Users/admin/codeProject/mineru/.venv/bin/mineru-models-download -s modelscope -m pipeline
+```
+
+`/Users/admin/codeProject/mineru/mineru.json` 中的 `models-dir.pipeline` 应指向实际模型目录：
+
+```json
+{
+  "models-dir": {
+    "pipeline": "/Users/admin/codeProject/mineru/models/modelscope/models/OpenDataLab/PDF-Extract-Kit-1___0",
+    "vlm": ""
+  }
+}
+```
+
+MacBook M2 16GB 环境优先使用 pipeline，不默认启用 VLM/hybrid。
+
+## 启动和停止
+
+启动：
+
+```bash
+/Users/admin/codeProject/mineru/start-mineru.sh
+```
+
+停止：
+
+```bash
+/Users/admin/codeProject/mineru/stop-mineru.sh
+```
+
+服务通过 macOS LaunchAgent 托管：
+
+```text
+/Users/admin/Library/LaunchAgents/com.synapse.mineru.plist
+```
+
+查看状态：
+
+```bash
+launchctl print "gui/$(id -u)/com.synapse.mineru"
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+查看日志：
+
+```bash
+tail -f /Users/admin/codeProject/mineru/logs/mineru-api.log
+```
+
+## 健康检查
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+curl -I http://127.0.0.1:8000/docs
+```
+
+用 PDF 验证 `/file_parse`：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/file_parse \
+  -F files=@/path/to/sample.pdf \
+  -F backend=pipeline \
+  -F parse_method=auto \
+  -F lang_list=ch \
+  -F formula_enable=true \
+  -F table_enable=true \
+  -F return_md=true \
+  -F return_middle_json=false \
+  -F return_content_list=false \
+  -F response_format_zip=false
+```
+
+首次请求会加载 pipeline 模型，耗时会明显更长；后续请求复用已加载模型。
+
+## Synapse 配置
+
+配置文件：
+
+```text
+synapse-kb-bootstrap/src/main/resources/application.yaml
+```
+
+当前配置：
+
+```yaml
+synapse:
+  parser:
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      endpoint: /file_parse
+      backend: pipeline
+      parse-method: auto
+      language: ch
+      formula-enable: true
+      table-enable: true
+      timeout-seconds: 600
+      fallback-to-tika: true
+```
+
+如果只想使用内置 Tika，可覆盖：
+
+```yaml
+synapse:
+  parser:
+    provider: tika
+```
+
+## 运行验证
+
+```bash
+cd /Users/admin/codeProject/synapse
+mvn -pl synapse-kb-bootstrap -am test
+```
+
+启动 Synapse 后上传小 PDF。正常情况下，摄入 Worker 会通过 `MineruDocumentParserAdapter` 调用 `http://127.0.0.1:8000/file_parse`；如果 MinerU 失败且 `fallback-to-tika=true`，会回退到 `ApacheTikaDocumentParserAdapter`。
+
+## 许可证注意
+
+MinerU 当前 license 页面显示其基于 Apache 2.0，但带有额外限制和归属要求，商业规模触发条件需要法务确认。当前集成方式是本地独立服务调用，没有把 MinerU 代码或模型直接并入 Synapse 仓库；这降低了工程耦合，但不消除许可证审查要求。
+
+内部知识库系统试用通常风险可控。正式商用、对外分发、SaaS 化或达到许可证约定规模前，必须让法务确认 MinerU License 的额外条款。

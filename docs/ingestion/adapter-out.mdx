@@ -1,16 +1,78 @@
 ---
 title: Adapter-Out 层
-description: Tika 解析、Embedding、Milvus v3、BM25 索引、GridFS、时效字段存储
+description: MinerU/Tika 解析、Embedding、Milvus v3、BM25 索引、GridFS、时效字段存储
 ---
 
 # 文档上传与摄入 —— Adapter-Out 层
 
-## ApacheTikaDocumentParserAdapter
+## DocumentParserPort 实现
+
+文档解析通过 `DocumentParserPort` 抽象，Application 层只调用：
+
+```java
+String text = documentParserPort.parse(content, document.getFileName());
+```
+
+具体解析器由 `synapse.parser.provider` 选择：
+
+| provider | 实现类 | 说明 |
+|----------|--------|------|
+| `mineru` | `MineruDocumentParserAdapter` | 调用外部 MinerU REST 服务，当前默认配置 |
+| `tika` | `ApacheTikaDocumentParserAdapter` | 使用内置 Apache Tika 解析 |
+
+### MineruDocumentParserAdapter
+
+文件：`synapse-kb-adapter/.../out/parser/MineruDocumentParserAdapter.java`
+
+```java
+@Component
+@ConditionalOnProperty(name = "synapse.parser.provider", havingValue = "mineru")
+public class MineruDocumentParserAdapter implements DocumentParserPort {
+    @Override
+    public String parse(InputStream inputStream, String fileName) {
+        byte[] bytes = readLimited(inputStream);
+        try {
+            String text = parseWithMineru(bytes, fileName);
+            if (text.isBlank()) {
+                throw new DomainException("MinerU 未解析出有效文本");
+            }
+            return text;
+        } catch (DomainException e) {
+            if (!fallbackEnabled) {
+                throw e;
+            }
+            return fallbackParser.parse(new ByteArrayInputStream(bytes), fileName);
+        }
+    }
+}
+```
+
+MinerU 作为独立 Python 服务部署，Synapse 只通过 `mineru-api` 的 multipart `/file_parse` 接口调用它。这样可以避免把 Python 环境、模型文件和推理依赖混入 Java 进程，也便于独立启动、停止、升级和观察日志。
+
+当前请求参数：
+
+| multipart 字段 | 当前值/配置 | 说明 |
+|-----------------|------------|------|
+| `files` | 上传文件字节 | 单文件解析 |
+| `backend` | `synapse.parser.mineru.backend`，默认 `pipeline` | MinerU 后端 |
+| `parse_method` | `auto` | 自动解析 |
+| `lang_list` | `ch` | 中文文档优先 |
+| `formula_enable` | `true` | 启用公式解析 |
+| `table_enable` | `true` | 启用表格解析 |
+| `return_md` | `true` | 返回 Markdown |
+| `return_middle_json` | `false` | 不返回中间 JSON |
+| `return_content_list` | `false` | 不返回内容列表 |
+| `response_format_zip` | `false` | 返回 JSON 而非 zip |
+
+适配器会从 MinerU 响应中递归提取 `md_content`、`markdown` 或 `md` 字段。解析失败、超时、空响应或返回非 2xx 时，如果 `synapse.parser.mineru.fallback-to-tika=true`，会使用 Apache Tika 进行兜底解析。
+
+### ApacheTikaDocumentParserAdapter
 
 文件：`synapse-kb-adapter/.../out/parser/ApacheTikaDocumentParserAdapter.java`
 
 ```java
 @Component
+@ConditionalOnProperty(name = "synapse.parser.provider", havingValue = "tika", matchIfMissing = true)
 public class ApacheTikaDocumentParserAdapter implements DocumentParserPort {
     private final AutoDetectParser parser = new AutoDetectParser();
 
@@ -45,9 +107,9 @@ public class ApacheTikaDocumentParserAdapter implements DocumentParserPort {
 }
 ```
 
-### 安全设计
+### 解析安全设计
 
-PDF 可能包含恶意内容（JavaScript、表单动作等）。Tika 的 `PDFParserConfig` 禁用了这些功能，只提取纯文本内容。
+两种解析器都受 `synapse.upload.max-file-bytes` 和 `synapse.upload.max-parsed-chars` 约束。Tika 解析 PDF 时通过 `PDFParserConfig` 禁用 AcroForm、XFA、inline image、动作和 OCR，只提取纯文本内容。MinerU 调用失败时的 fallback 也复用同一套 Tika 安全策略。
 
 ## OllamaEmbeddingAdapter
 

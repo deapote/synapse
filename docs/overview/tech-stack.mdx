@@ -17,7 +17,8 @@ description: Synapse 用到的每一项技术，以及选型说明
 | Ollama | 最新 | 本地运行 LLM 和 Embedding 模型 |
 | Milvus | 2.3+ | 向量数据库，存储和检索文档向量 |
 | MongoDB | 6.0+ | 元数据存储、关键词倒排索引 |
-| Apache Tika | — | 文档格式解析（PDF/Word/TXT 等） |
+| MinerU | 3.1.x | PDF 版面、表格、公式解析，本地独立服务 |
+| Apache Tika | — | 内置轻量解析和 MinerU 失败 fallback |
 | Vue 3 | — | 前端框架 |
 | Vite | — | 前端构建工具 |
 | Pinia | — | 前端状态管理 |
@@ -106,7 +107,7 @@ ChatLanguageModel model = OllamaChatModel.builder()
 // Embedding 模型：统一的 EmbeddingModel 接口
 EmbeddingModel embedder = OllamaEmbeddingModel.builder()
     .baseUrl("http://localhost:11434")
-    .modelName("gme-qwen2-vl:2b")
+    .modelName("hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0")
     .build();
 ```
 
@@ -128,7 +129,7 @@ Ollama 让在本地运行大模型变得极其简单：
 
 ```bash
 ollama pull qwen2.5:7b      # 下载对话模型
-ollama pull gme-qwen2-vl:2b # 下载 Embedding 模型
+ollama pull hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0 # 下载 Embedding 模型
 ollama serve                 # 启动服务
 ```
 
@@ -171,6 +172,31 @@ MongoDB 的 `$text` 索引对中文支持不佳（基于空格分词），且 BM
 
 ---
 
+## MinerU + Apache Tika
+
+**文档解析的分层方式**
+
+Synapse 通过 `DocumentParserPort` 抽象文档解析能力，Application 层只关心“输入文件流，输出文本”。具体 provider 由配置选择：
+
+- `mineru`：调用外部 `mineru-api`，当前默认配置，用于提升 PDF、表格、公式和复杂版面的解析质量
+- `tika`：使用 Java 进程内 Apache Tika，适合轻量解析，也作为 MinerU 不可用时的 fallback
+
+MinerU 作为独立 Python 服务部署在 Synapse 仓库之外，例如 `/Users/admin/codeProject/mineru`。模型缓存固定在 MinerU 目录下，不进入 Java 进程，也不提交到 Git。
+
+```yaml
+synapse:
+  parser:
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      backend: pipeline
+      fallback-to-tika: true
+```
+
+> 注意：MinerU 解析模型与 Ollama 的 `qwen2.5:7b` 问答模型是两条链路。`qwen2.5:7b` 继续用于问答生成，不用于 MinerU pipeline 文档解析。
+
+---
+
 ## Vue 3 + Pinia
 
 **前端状态管理的设计**
@@ -204,7 +230,7 @@ graph LR
         F[Ollama<br/>LLM + Embedding]
         G[Milvus<br/>向量检索]
         H[MongoDB<br/>元数据 + BM25]
-        I[Tika<br/>文档解析]
+        I[MinerU / Tika<br/>文档解析]
     end
 
     subgraph 前端

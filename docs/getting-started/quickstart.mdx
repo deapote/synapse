@@ -15,6 +15,7 @@ description: 本地开发环境搭建步骤
 | MongoDB | 6.0+ | 元数据存储 |
 | Milvus | 2.3+ | 向量存储 |
 | Ollama | 最新 | LLM 和 Embedding 服务 |
+| MinerU | 3.1.x | 文档解析服务，默认本地独立部署 |
 
 ## 1. 克隆项目
 
@@ -69,13 +70,24 @@ ollama serve
 在另一个终端拉取模型：
 ```bash
 ollama pull qwen2.5:7b
-ollama pull gme-qwen2-vl:2b
+ollama pull hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0
 ```
 
 验证模型列表：
 ```bash
 ollama list
 ```
+
+### MinerU
+
+当前默认配置使用本地 MinerU API 解析文档：
+
+```bash
+/Users/admin/codeProject/mineru/start-mineru.sh
+curl -sS http://127.0.0.1:8000/health
+```
+
+MinerU 的完整部署、模型下载和脚本说明见 [MinerU 本地解析服务](/deployment/mineru-local)。如果只是临时体验，也可以把 `synapse.parser.provider` 覆盖为 `tika`，使用内置 Tika 解析。
 
 ## 3. 启动后端
 
@@ -132,13 +144,31 @@ lsof -i :5173  # 前端端口
 lsof -i :27017 # MongoDB 端口
 lsof -i :19530 # Milvus 端口
 lsof -i :11434 # Ollama 端口
+lsof -i :8000  # MinerU 端口
 ```
 
 处理方式：结束占用进程，或修改 `application.yaml` 中的端口配置。
 
 ### Ollama 模型下载缓慢
 
-模型文件共约 10GB，国内网络可能较慢。可仅先拉取 `qwen2.5:7b`（文档摄入和问答必需），Embedding 模型可后续补充。
+模型文件共约 10GB，国内网络可能较慢。`qwen2.5:7b` 用于问答生成，Embedding 模型用于文档向量化和检索；MinerU pipeline 模型单独下载到 `/Users/admin/codeProject/mineru/models/`，不走 Ollama。
+
+### MinerU 不可用
+
+检查服务：
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+tail -n 200 /Users/admin/codeProject/mineru/logs/mineru-api.log
+```
+
+如果当前只想验证 Synapse 主流程，可在本地配置中临时改为：
+
+```yaml
+synapse:
+  parser:
+    provider: tika
+```
 
 ### Maven 依赖下载失败
 

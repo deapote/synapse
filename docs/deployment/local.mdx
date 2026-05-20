@@ -15,6 +15,7 @@ description: 环境要求、启动命令、配置文件说明
 | MongoDB | 6.0+ | 元数据存储 |
 | Milvus | 2.3+ | 向量存储 |
 | Ollama | 最新 | 本地 LLM |
+| MinerU | 3.1.x | 文档解析服务（可回退 Tika） |
 
 ## Docker Compose 一键启动依赖
 
@@ -39,7 +40,7 @@ services:
   milvus-attu:
     image: zilliz/attu:v2.3.5
     ports:
-      - "8000:3000"
+      - "8001:3000"
     environment:
       - MILVUS_URL=milvus-standalone:19530
 
@@ -52,50 +53,84 @@ volumes:
 docker-compose -f docker-compose.dev.yml up -d
 ```
 
+Attu 本地访问端口使用 `8001`，避免和 MinerU API 的 `8000` 冲突。
+
 ## 配置文件说明
 
 `synapse-kb-bootstrap/src/main/resources/application.yaml`
 
 ```yaml
+server:
+  port: 8082
+
 spring:
   data:
     mongodb:
-      uri: mongodb://localhost:27017/synapse
+      uri: mongodb://localhost:27017/synapse_kb?serverSelectionTimeoutMS=2000&connectTimeoutMS=1000
 
 synapse:
-  llm:
-    base-url: http://localhost:11434
-    model-name: qwen2.5:7b
-
-  embedding:
-    base-url: http://localhost:11434
-    model-name: gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0
-    dimension: 1536
-
-  milvus:
-    host: localhost
-    port: 19530
-    collection: document_chunks
-
+  upload:
+    max-file-bytes: 20971520
+    max-parsed-chars: 10000000
+    allowed-extensions: pdf,doc,docx,txt,md
+  parser:
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      endpoint: /file_parse
+      backend: pipeline
+      parse-method: auto
+      language: ch
+      formula-enable: true
+      table-enable: true
+      timeout-seconds: 600
+      fallback-to-tika: true
   ingestion:
-    max-file-size: 52428800        # 50MB
-    allowed-extensions: pdf,docx,txt,md
-    chunk-max-segment-size: 1000
-    chunk-overlap-ratio: 0.15
-
+    virtual-threads: true
   rag:
     top-k: 5
     vector-weight: 0.65
     keyword-weight: 0.35
-    query-rewrite-enabled: true
-    query-rewrite-similarity-threshold: 0.8
-
   chat-memory:
     enabled: true
     recent-message-limit: 8
     summary-trigger-message-count: 12
     max-summary-chars: 1500
+
+ollama:
+  base-url: http://localhost:11434
+  chat-model: qwen2.5:7b
+  embedding-model: hf.co/sinequa/gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0
+
+milvus:
+  host: 127.0.0.1
+  port: 19530
+  embedding-dimension: 1536
+  v3:
+    collection-name: synapse_document_chunks_v3
 ```
+
+## 启动 MinerU
+
+本地默认使用独立 MinerU 服务解析 PDF。服务目录与 Synapse 同级：
+
+```text
+/Users/admin/codeProject/mineru
+```
+
+启动：
+
+```bash
+/Users/admin/codeProject/mineru/start-mineru.sh
+```
+
+验证：
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+```
+
+如果暂时不启动 MinerU，可把配置覆盖为 `synapse.parser.provider=tika`，使用内置 Apache Tika 解析。完整 MinerU 部署见 [MinerU 本地解析服务](./mineru-local)。
 
 ## 启动后端
 
@@ -120,6 +155,6 @@ npm run dev
 
 | 用户名 | 密码 | 角色 |
 |--------|------|------|
-| admin | synapse-admin | ADMIN |
+| admin | ChangeMe123! | ADMIN |
 
 **⚠️ 生产环境必须修改默认密码。**

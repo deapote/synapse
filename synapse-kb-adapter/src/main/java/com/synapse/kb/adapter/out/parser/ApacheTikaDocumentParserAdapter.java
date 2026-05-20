@@ -3,6 +3,7 @@ package com.synapse.kb.adapter.out.parser;
 import com.synapse.kb.port.out.DocumentParserPort;
 import com.synapse.shared.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.apache.tika.exception.WriteLimitReachedException;
 import org.apache.tika.metadata.Metadata;
@@ -21,6 +22,7 @@ import java.util.Locale;
  * Apache Tika 文档解析适配器。
  */
 @Component
+@ConditionalOnProperty(name = "synapse.parser.provider", havingValue = "tika", matchIfMissing = true)
 public class ApacheTikaDocumentParserAdapter implements DocumentParserPort {
 
     private final AutoDetectParser parser = new AutoDetectParser();

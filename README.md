@@ -25,6 +25,7 @@ Synapse 是一个支持多知识库隔离、用户鉴权、流式问答和资料
 - **资料时效性治理 v1** — 文档携带 `effectiveFrom`、`effectiveTo`、`lifecycleStatus` 和 `canonicalKey`，检索时按 `asOfDate` 硬过滤
 - **资料时效性治理 v2** — 在线 metadata patch、手动 supersede/retire/reactivate、强制 reindex、索引状态追踪、审计事件、版本链查询
 - **法规/政策多版本管理** — 同一 `canonicalKey` 可存在多个版本，新版本通过 `supersedesDocumentId` 自动替代旧版本，也支持手动建立替代关系
+- **MinerU 文档解析集成** — 可通过本地独立 MinerU API 解析复杂 PDF、表格和公式，失败时可回退 Apache Tika
 - **asOfDate 查询** — 支持显式指定查询日期，未传时默认当前日期并附带轻量时间意图解析
 - **Milvus v3 + Mongo BM25 双侧时效过滤** — 向量检索和关键词检索均按 `knowledgeBaseId + effectiveFromEpochDay + effectiveToEpochDay + lifecycleStatus` 做硬过滤
 - **引用带版本和生效期** — SSE 返回的 `ChunkReferenceResponse` 包含 `versionLabel`、`effectiveFrom`、`effectiveTo`、`lifecycleStatus`、`authorityLevel`
@@ -46,7 +47,7 @@ Synapse 是一个支持多知识库隔离、用户鉴权、流式问答和资料
 | Embedding | Ollama | gme-Qwen2-VL-2B-Instruct-GGUF:Q8_0 (1536维) |
 | 向量存储 | Milvus | Standalone (v2 SDK, v3 collection) |
 | 元数据/关键词索引 | MongoDB | Spring Data MongoDB 同步仓储 |
-| 文档解析 | Apache Tika | - |
+| 文档解析 | MinerU / Apache Tika | MinerU 本地服务，Tika fallback |
 | 构建工具 | Maven | Java 21 |
 | 前端 | Vue 3 + Vite + Pinia | - |
 
@@ -63,7 +64,7 @@ synapse/
 ├── synapse-auth-config/         # 认证 Bean 组装与安全过滤器
 ├── synapse-kb-domain/           # 知识库领域层 —— 纯 Java，零框架依赖
 ├── synapse-kb-application/      # 知识库应用层 —— 用例编排，定义端口
-├── synapse-kb-adapter/          # 知识库适配器层 —— Web、Mongo、Milvus、Ollama、Tika
+├── synapse-kb-adapter/          # 知识库适配器层 —— Web、Mongo、Milvus、Ollama、MinerU/Tika
 ├── synapse-kb-config/           # 知识库 Bean 组装
 ├── synapse-kb-bootstrap/        # Spring Boot 启动入口
 └── synapse-frontend/            # Vue 前端
@@ -82,7 +83,10 @@ synapse/
 - Node.js 20+
 - MongoDB（默认端口 27017）
 - Milvus Standalone（默认端口 19530）
-- Ollama（默认端口 11434），并已下载模型：
+- Ollama（默认端口 11434）
+- MinerU（默认端口 8000），用于文档解析；完整部署见 [docs/deployment/mineru-local.mdx](docs/deployment/mineru-local.mdx)
+
+Ollama 需要先下载模型：
 
 ```bash
 ollama pull qwen2.5:7b
@@ -150,6 +154,18 @@ synapse:
     max-parsed-chars: 10000000
     allowed-extensions: pdf,doc,docx,txt,md
     allowed-content-types: application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown
+  parser:
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      endpoint: /file_parse
+      backend: pipeline
+      parse-method: auto
+      language: ch
+      formula-enable: true
+      table-enable: true
+      timeout-seconds: 600
+      fallback-to-tika: true
   chunking:
     max-size: 1000
     overlap-ratio: 0.15

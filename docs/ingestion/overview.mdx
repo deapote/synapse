@@ -7,7 +7,7 @@ description: 文档上传与摄入要解决什么问题，涉及哪些角色
 
 ## 场景
 
-用户在知识库详情页点击"上传文档"，选择一个 PDF 文件。系统需要在后台把这个 PDF 变成可检索的知识：解析文本、切分成小块、向量化、存入向量数据库和关键词索引。
+用户在知识库详情页点击"上传文档"，选择一个 PDF 文件。系统需要在后台把这个 PDF 变成可检索的知识：通过 MinerU 或 Tika 解析文本、切分成小块、向量化、存入向量数据库和关键词索引。
 
 ## 文档摄入的复杂度
 
@@ -31,6 +31,7 @@ description: 文档上传与摄入要解决什么问题，涉及哪些角色
 | Application | `synapse-kb-application/.../port/service/KnowledgeBaseApplicationService.java` |
 | Adapter-In | `synapse-kb-adapter/.../in/web/DocumentController.java` |
 | Adapter-In | `synapse-kb-adapter/.../in/worker/IngestionJobWorker.java` |
+| Adapter-Out | `synapse-kb-adapter/.../out/parser/MineruDocumentParserAdapter.java` |
 | Adapter-Out | `synapse-kb-adapter/.../out/parser/ApacheTikaDocumentParserAdapter.java` |
 | Adapter-Out | `synapse-kb-adapter/.../out/embedding/OllamaEmbeddingAdapter.java` |
 | Adapter-Out | `synapse-kb-adapter/.../out/vector/MilvusVectorStoreAdapter.java` |

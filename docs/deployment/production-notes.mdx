@@ -15,7 +15,8 @@ java -jar synapse.jar --spring.config.location=./application-prod.yaml
 
 # 方式二：环境变量
 export SPRING_DATA_MONGODB_URI=mongodb://prod-host:27017/synapse
-export SYNAPSE_LLM_BASE_URL=http://ollama-internal:11434
+export OLLAMA_BASE_URL=http://ollama-internal:11434
+export SYNAPSE_PARSER_MINERU_BASE_URL=http://mineru-internal:8000
 ```
 
 ## 安全加固
@@ -50,8 +51,8 @@ sa-token:
 
 ```yaml
 synapse:
-  ingestion:
-    max-file-size: 104857600   # 100MB，按需调整
+  upload:
+    max-file-bytes: 104857600   # 100MB，按需调整
     allowed-extensions: pdf,docx,txt,md
 ```
 
@@ -70,6 +71,14 @@ synapse:
 - 使用 GPU 运行（CUDA / Metal）
 - 调整 `num_ctx` 上下文长度
 - 并发请求多时考虑多实例负载均衡
+
+### MinerU
+
+- 将 MinerU 作为独立服务部署和监控，不要把 Python 依赖、模型文件或缓存目录打入 Synapse Java 包
+- 生产配置显式设置 `synapse.parser.provider=mineru` 和 `synapse.parser.mineru.base-url`
+- 为 `mineru-api` 增加健康检查、日志采集和进程托管；Synapse 侧 `timeout-seconds` 应覆盖首次模型加载和复杂 PDF 解析耗时
+- 如业务要求解析质量强一致，可将 `fallback-to-tika=false`，让 MinerU 故障进入摄入失败和重试流程
+- MinerU License 带有额外限制和归属要求，商用、SaaS 化或对外分发前需完成法务确认
 
 ### MongoDB
 

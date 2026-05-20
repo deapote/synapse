@@ -51,3 +51,39 @@ public class KnowledgeBaseBeanConfig {
 `KnowledgeBaseApplicationService` 的构造函数有十几个参数。这不是代码坏味道，而是**显式依赖声明**——你一眼就能看出这个服务需要哪些能力。
 
 如果用 `@Autowired` 字段注入，依赖关系藏在类内部，不容易看出来。
+
+## 文档解析 Bean 选择
+
+`DocumentParserPort` 的实现不在 Config 层手工装配，而是由 adapter 上的条件注解决定：
+
+```java
+@Component
+@ConditionalOnProperty(name = "synapse.parser.provider", havingValue = "mineru")
+public class MineruDocumentParserAdapter implements DocumentParserPort {
+}
+
+@Component
+@ConditionalOnProperty(name = "synapse.parser.provider", havingValue = "tika", matchIfMissing = true)
+public class ApacheTikaDocumentParserAdapter implements DocumentParserPort {
+}
+```
+
+默认缺省行为仍可回到 Tika；当前 `application.yaml` 显式配置为：
+
+```yaml
+synapse:
+  parser:
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      endpoint: /file_parse
+      backend: pipeline
+      parse-method: auto
+      language: ch
+      formula-enable: true
+      table-enable: true
+      timeout-seconds: 600
+      fallback-to-tika: true
+```
+
+`fallback-to-tika=true` 只影响 MinerU 调用失败后的解析兜底，不改变 `DocumentParserPort` 的主 provider。生产环境如果要求解析质量强一致，可设为 `false`，让 MinerU 故障直接导致摄入失败并进入重试/失败状态。

@@ -1,6 +1,6 @@
 ---
 title: 配置参考
-description: application.yaml 所有配置项完整说明，含 Milvus v3 和时效相关配置
+description: application.yaml 所有配置项完整说明，含 MinerU、Milvus v3 和时效相关配置
 ---
 
 # 参考 —— 配置参考
@@ -35,6 +35,19 @@ synapse:
     max-parsed-chars: 10000000
     allowed-extensions: pdf,doc,docx,txt,md
     allowed-content-types: application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown
+  parser:
+    # tika: 内置 Apache Tika；mineru: 调用外部 MinerU REST 服务，失败时可回退 Tika。
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      endpoint: /file_parse
+      backend: pipeline
+      parse-method: auto
+      language: ch
+      formula-enable: true
+      table-enable: true
+      timeout-seconds: 600
+      fallback-to-tika: true
   ingestion:
     virtual-threads: true
     gridfs:
@@ -200,9 +213,26 @@ resilience4j:
 | 配置项 | 默认值 | 说明 | 是否必须 |
 |--------|--------|------|----------|
 | `synapse.upload.max-file-bytes` | 20971520 | 最大文件大小（字节），默认 20MB | 否 |
-| `synapse.upload.max-parsed-chars` | 10000000 | Tika 最大解析字符数 | 否 |
+| `synapse.upload.max-parsed-chars` | 10000000 | 文档解析结果最大字符数；Tika 和 MinerU fallback 均受此限制 | 否 |
 | `synapse.upload.allowed-extensions` | pdf,doc,docx,txt,md | 允许的文件扩展名 | 否 |
 | `synapse.upload.allowed-content-types` | ... | 允许的 MIME 类型 | 否 |
+
+### 文档解析
+
+| 配置项 | 默认值 | 说明 | 是否必须 |
+|--------|--------|------|----------|
+| `synapse.parser.provider` | `tika` | 文档解析 provider。`mineru` 调外部 MinerU REST 服务；`tika` 使用内置 Apache Tika | 否 |
+| `synapse.parser.mineru.base-url` | `http://localhost:8000` | MinerU API 地址；本地部署推荐 `http://127.0.0.1:8000` | provider 为 `mineru` 时必须 |
+| `synapse.parser.mineru.endpoint` | `/file_parse` | MinerU 文件解析接口路径 | 否 |
+| `synapse.parser.mineru.backend` | `pipeline` | MinerU 后端，当前本地部署使用 pipeline | 否 |
+| `synapse.parser.mineru.parse-method` | `auto` | MinerU `parse_method` 参数 | 否 |
+| `synapse.parser.mineru.language` | `ch` | MinerU `lang_list` 参数，中文文档默认 `ch` | 否 |
+| `synapse.parser.mineru.formula-enable` | `true` | 是否启用公式解析 | 否 |
+| `synapse.parser.mineru.table-enable` | `true` | 是否启用表格解析 | 否 |
+| `synapse.parser.mineru.timeout-seconds` | `600` | 单次 MinerU 解析请求超时秒数。首次加载模型会更慢，建议不要设太小 | 否 |
+| `synapse.parser.mineru.fallback-to-tika` | `true` | MinerU 失败、超时或返回空内容时是否回退 Apache Tika | 否 |
+
+`synapse.parser.provider=mineru` 时，应用启动不负责拉起 MinerU 服务；需先按 [MinerU 本地解析服务](../deployment/mineru-local) 启动 `mineru-api`。如果 MinerU 不可用且开启 fallback，文档仍会用 Tika 解析，但复杂 PDF、表格和版面还原能力会下降。
 
 ### 分块
 

@@ -16,7 +16,7 @@ synapse/
 ├── synapse-auth-config/         # 认证 Bean 组装与安全过滤器
 ├── synapse-kb-domain/           # 知识库领域层 —— 纯 Java，零框架依赖
 ├── synapse-kb-application/      # 知识库应用层 —— 用例编排，定义端口
-├── synapse-kb-adapter/          # 知识库适配器层 —— Web、Mongo、Milvus、Ollama、Tika
+├── synapse-kb-adapter/          # 知识库适配器层 —— Web、Mongo、Milvus、Ollama、MinerU/Tika
 ├── synapse-kb-config/           # 知识库 Bean 组装
 ├── synapse-kb-bootstrap/        # Spring Boot 启动入口
 └── synapse-frontend/            # Vue 3 + Vite + Pinia 前端
@@ -162,12 +162,14 @@ Document.create(..., DocumentMetadata)  // domain 层校验和默认值
 Worker 异步处理
     ↓
 processDocument()
-    ├── parseDocumentChunks() → Tika 解析
+    ├── parseDocumentChunks() → DocumentParserPort（MinerU 或 Tika）
     ├── embeddingPort.embed() → Ollama 向量化
     ├── vectorStorePort.store(kbId, docId, ..., metadata) → Milvus v3
     ├── chunkSearchIndexPort.store(kbId, docId, ..., metadata) → Mongo BM25
     └── 新文档 COMPLETED 后 → supersedeOldDocument() → 旧文档标记 SUPERSEDED
 ```
+
+`DocumentParserPort` 当前可由 `MineruDocumentParserAdapter` 或 `ApacheTikaDocumentParserAdapter` 实现。默认配置使用本地独立部署的 MinerU API（`http://127.0.0.1:8000/file_parse`），失败时可回退 Tika；Application 层不依赖具体解析技术。
 
 ### Query 流程
 

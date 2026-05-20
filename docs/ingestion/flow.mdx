@@ -53,7 +53,7 @@ sequenceDiagram
     participant Worker
     participant JobRepo
     participant DocumentRepo
-    participant Tika
+    participant Parser as DocumentParserPort
     participant Chunker
     participant Embedding
     participant Milvus
@@ -72,8 +72,8 @@ sequenceDiagram
     Worker->>GridFS: open(contentObjectId)
     GridFS-->>Worker: InputStream
 
-    Worker->>Tika: parse(inputStream, fileName)
-    Tika-->>Worker: text (String)
+    Worker->>Parser: parse(inputStream, fileName)
+    Parser-->>Worker: text / markdown (String)
 
     Worker->>Chunker: split(text)
     Chunker-->>Worker: List<DocumentChunk>
@@ -138,7 +138,7 @@ graph TD
 | 3 | `KnowledgeBaseApplicationService.java:runIngestionTask()` | 获取文档并处理 |
 | 4 | `KnowledgeBaseApplicationService.java:processDocument()` | `transitionTo(PROCESSING)` |
 | 5 | `KnowledgeBaseApplicationService.java:parseDocumentChunks()` | `documentContentStorePort.open()` 读取 GridFS |
-| 6 | `ApacheTikaDocumentParserAdapter.java:parse()` | Tika 解析文档 |
+| 6 | `MineruDocumentParserAdapter.java:parse()` 或 `ApacheTikaDocumentParserAdapter.java:parse()` | 解析文档 |
 | 7 | `RecursiveChunkingStrategy.java:split()` | 语义分块 |
 | 8 | `OllamaEmbeddingAdapter.java:embed()` | Ollama 向量化 |
 | 9 | `MilvusVectorStoreAdapter.java:store()` | 存储向量 |

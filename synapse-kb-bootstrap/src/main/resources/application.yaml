@@ -25,6 +25,19 @@ synapse:
     max-parsed-chars: 10000000
     allowed-extensions: pdf,doc,docx,txt,md
     allowed-content-types: application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown
+  parser:
+    # tika: 内置 Apache Tika；mineru: 调用外部 MinerU REST 服务，失败时可回退 Tika。
+    provider: mineru
+    mineru:
+      base-url: http://127.0.0.1:8000
+      endpoint: /file_parse
+      backend: pipeline
+      parse-method: auto
+      language: ch
+      formula-enable: true
+      table-enable: true
+      timeout-seconds: 600
+      fallback-to-tika: true
   ingestion:
     virtual-threads: true
     gridfs:
