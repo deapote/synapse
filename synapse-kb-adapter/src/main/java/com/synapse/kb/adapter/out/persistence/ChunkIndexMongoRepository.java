@@ -6,6 +6,9 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 import java.util.Collection;
 import java.util.List;
 
+/**
+ * Chunk 关键词索引 Spring Data MongoDB 仓储接口。
+ */
 public interface ChunkIndexMongoRepository extends MongoRepository<ChunkIndexDocument, String> {
 
     List<ChunkIndexDocument> findByKnowledgeBaseIdAndTokensIn(String knowledgeBaseId, Collection<String> tokens);

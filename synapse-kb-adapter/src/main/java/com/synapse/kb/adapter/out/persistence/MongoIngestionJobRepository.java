@@ -18,6 +18,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
+/**
+ * 摄入任务领域仓储实现，封装 Spring Data MongoDB 操作。
+ * 支持任务保存、按文档查询最新任务、原子 claim 及按知识库/文档清理任务。
+ */
 @Component
 public class MongoIngestionJobRepository implements IngestionJobRepository {
 

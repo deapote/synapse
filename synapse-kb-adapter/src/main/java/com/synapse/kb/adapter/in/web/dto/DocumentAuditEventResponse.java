@@ -2,6 +2,9 @@ package com.synapse.kb.adapter.in.web.dto;
 
 import java.time.Instant;
 
+/**
+ * 文档审计事件响应 DTO。
+ */
 public record DocumentAuditEventResponse(
         String id,
         String documentId,

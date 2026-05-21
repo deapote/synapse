@@ -6,6 +6,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
+/**
+ * 文档审计事件 MongoDB 文档实体，对应 DocumentAuditEvent 领域模型。
+ * 记录文档关键操作（上传、更新、删除等）的变更前后快照及操作人。
+ */
 @Document(collection = "document_audit_events")
 public class DocumentAuditEventDocument {
 

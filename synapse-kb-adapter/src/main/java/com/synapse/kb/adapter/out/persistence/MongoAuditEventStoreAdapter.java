@@ -8,6 +8,10 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
+/**
+ * 基于 MongoDB 的审计事件存储适配器，实现 AuditEventStorePort。
+ * 将文档操作审计记录持久化到 DocumentAuditEventDocument 集合，支持按文档 ID 查询。
+ */
 @Component
 public class MongoAuditEventStoreAdapter implements AuditEventStorePort {
 

@@ -5,6 +5,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
+/**
+ * 聊天会话 MongoDB 文档实体，对应 ChatSession 领域模型。
+ * 按 ownerUserId + knowledgeBaseId 隔离，保存会话摘要及消息计数。
+ */
 @Document(collection = "chat_sessions")
 public class ChatSessionDocument {
     @Id

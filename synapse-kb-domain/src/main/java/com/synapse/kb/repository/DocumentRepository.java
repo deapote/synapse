@@ -32,4 +32,10 @@ public interface DocumentRepository {
 
     /** 查找替代了指定文档的所有文档。 */
     List<Document> findBySupersedesDocumentId(DocumentId documentId);
+
+    /** 按复合条件查询文档（数据库层过滤+分页）。 */
+    List<Document> findByCriteria(DocumentQueryCriteria criteria);
+
+    /** 按复合条件统计文档数量。 */
+    long countByCriteria(DocumentQueryCriteria criteria);
 }

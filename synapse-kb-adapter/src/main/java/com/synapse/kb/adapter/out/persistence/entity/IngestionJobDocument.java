@@ -7,6 +7,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
+/**
+ * 文档摄入任务 MongoDB 文档实体。
+ * 保存待解析、切分、建索引的后台任务状态，支持分布式租约认领与失败重试。
+ */
 @Document(collection = "ingestion_jobs")
 @CompoundIndex(name = "idx_ingestion_claim", def = "{'status': 1, 'nextRunAt': 1, 'leaseExpiresAt': 1}")
 public class IngestionJobDocument {

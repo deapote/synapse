@@ -17,6 +17,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * 文档索引刷新任务领域仓储实现，封装 Spring Data MongoDB 操作。
+ * 支持按状态与调度时间查询、原子 claim 及按文档 ID 清理任务。
+ */
 @Component
 public class MongoDocumentIndexRefreshJobRepository implements DocumentIndexRefreshJobRepository {
 

@@ -9,6 +9,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.Instant;
 import java.time.LocalDate;
 
+/**
+ * 文档 MongoDB 文档实体，对应 Document 领域模型。
+ * 保存文档元数据、摄入状态、时效信息及索引刷新版本，是知识库内容管理的核心存储。
+ */
 @Document(collection = "documents")
 @CompoundIndexes({
         @CompoundIndex(name = "uk_kb_content_hash", def = "{'knowledgeBaseId': 1, 'contentHash': 1}", unique = true),

@@ -35,7 +35,7 @@ public interface IngestDocumentUseCase {
 
 ## ingest() 方法 —— 同步上传
 
-文件：`synapse-kb-application/.../port/service/KnowledgeBaseApplicationService.java`
+文件：`synapse-kb-application/.../port/service/DocumentCommandService.java`
 
 ```java
 @Override
@@ -127,6 +127,8 @@ public DocumentId ingest(IngestDocumentCommand command) {
 这是一个**链式补偿**：每步失败时回滚之前所有步骤。
 
 ## processDocument() —— 异步处理
+
+由 `DocumentIngestionService` 执行：
 
 ```java
 private void processDocument(Document document, String contentObjectId) {
@@ -223,6 +225,8 @@ private void storeDocumentIndexes(Document document, List<DocumentChunk> chunks)
 
 ## 在线治理 UseCase（v2）
 
+由 `DocumentGovernanceService` 实现。
+
 ### UpdateDocumentMetadataUseCase
 
 ```java
@@ -303,6 +307,8 @@ public interface GetDocumentAuditEventsUseCase {
 
 ## 索引刷新任务
 
+由 `DocumentIndexRefreshService` 执行。
+
 ### DocumentIndexRefreshJob 实体
 
 ```java
@@ -370,6 +376,8 @@ private void runIndexRefreshTask(DocumentIndexRefreshJob job) {
 
 ### 摄入失败
 
+由 `DocumentIngestionService` 处理：
+
 ```java
 private void handleIngestionFailure(IngestionJob job, Document document, Exception e) {
     String reason = safeFailureReason(e);
@@ -390,7 +398,7 @@ private void handleIngestionFailure(IngestionJob job, Document document, Excepti
 
 ### 索引刷新失败
 
-索引刷新失败不会自动回退 Mongo 状态。`Document.indexStatus` 变为 `FAILED`，`lastIndexFailureReason` 记录失败原因。恢复方式：
+由 `DocumentIndexRefreshService` 处理。索引刷新失败不会自动回退 Mongo 状态。`Document.indexStatus` 变为 `FAILED`，`lastIndexFailureReason` 记录失败原因。恢复方式：
 1. 人工调用 `POST /api/documents/{id}/reindex` 强制重试
 2. 等待 Worker 按 `nextRunAt` 自动重试（指数退避）
 

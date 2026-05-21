@@ -19,6 +19,10 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * 文档摄入后台作业执行器。
+ * 按固定频率轮询并认领摄入任务，通过信号量控制并发，支持虚拟线程池。
+ */
 @Component
 @EnableScheduling
 public class IngestionJobWorker implements DisposableBean {

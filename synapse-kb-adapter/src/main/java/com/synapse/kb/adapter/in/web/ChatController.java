@@ -19,6 +19,10 @@ import reactor.core.publisher.Mono;
 import java.util.List;
 import java.util.stream.IntStream;
 
+/**
+ * 聊天会话与问答 Web 入口。
+ * 提供当前会话获取、新建会话及分页消息查询等 REST 端点。
+ */
 @RestController
 public class ChatController {
 

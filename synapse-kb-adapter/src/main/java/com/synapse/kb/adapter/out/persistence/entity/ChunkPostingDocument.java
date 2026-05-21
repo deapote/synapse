@@ -5,6 +5,10 @@ import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.mapping.Document;
 
+/**
+ * BM25 倒排索引 Posting 文档。
+ * 按 token 聚合记录包含该词的 chunk 列表及其词频、时效元数据，用于快速关键词检索。
+ */
 @Document(collection = "document_chunk_postings")
 @CompoundIndexes({
         @CompoundIndex(name = "idx_posting_kb_token", def = "{'knowledgeBaseId': 1, 'token': 1}"),

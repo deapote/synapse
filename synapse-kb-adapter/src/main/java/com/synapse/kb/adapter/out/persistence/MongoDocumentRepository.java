@@ -8,6 +8,7 @@ import com.synapse.kb.model.DocumentLifecycleStatus;
 import com.synapse.kb.model.DocumentSourceType;
 import com.synapse.kb.model.DocumentStatus;
 import com.synapse.kb.model.KnowledgeBaseId;
+import com.synapse.kb.repository.DocumentQueryCriteria;
 import com.synapse.kb.repository.DocumentRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -114,6 +115,38 @@ public class MongoDocumentRepository implements DocumentRepository {
                 .stream()
                 .map(this::toEntity)
                 .toList();
+    }
+
+    @Override
+    public List<Document> findByCriteria(DocumentQueryCriteria criteria) {
+        Query query = buildQuery(criteria);
+        query.with(PageRequest.of(criteria.page(), criteria.size(), Sort.by(Sort.Direction.DESC, "uploadedAt")));
+        return mongoTemplate.find(query, DocumentDocument.class).stream()
+                .map(this::toEntity)
+                .toList();
+    }
+
+    @Override
+    public long countByCriteria(DocumentQueryCriteria criteria) {
+        Query query = buildQuery(criteria);
+        return mongoTemplate.count(query, DocumentDocument.class);
+    }
+
+    private Query buildQuery(DocumentQueryCriteria criteria) {
+        Criteria c = Criteria.where("knowledgeBaseId").is(criteria.knowledgeBaseId().value());
+        if (criteria.sourceType() != null) {
+            c = c.and("sourceType").is(criteria.sourceType().name());
+        }
+        if (criteria.lifecycleStatus() != null) {
+            c = c.and("lifecycleStatus").is(criteria.lifecycleStatus().name());
+        }
+        if (criteria.indexStatus() != null) {
+            c = c.and("indexStatus").is(criteria.indexStatus().name());
+        }
+        if (criteria.canonicalKey() != null && !criteria.canonicalKey().isBlank()) {
+            c = c.and("canonicalKey").is(criteria.canonicalKey());
+        }
+        return new Query(c);
     }
 
     private DocumentDocument toDocument(Document document) {

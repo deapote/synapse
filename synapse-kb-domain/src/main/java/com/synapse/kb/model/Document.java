@@ -363,7 +363,7 @@ public class Document {
         this.metadataVersion++;
     }
 
-/** 标记索引刷新开始，清除之前的失败原因。 */
+    /** 标记索引刷新开始，清除之前的失败原因。 */
     public void markIndexRefreshing() {
         this.indexStatus = DocumentIndexStatus.REFRESHING;
         this.lastIndexFailureReason = null;

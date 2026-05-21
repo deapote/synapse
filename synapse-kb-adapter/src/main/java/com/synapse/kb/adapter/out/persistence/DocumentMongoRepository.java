@@ -6,6 +6,9 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 
 import java.util.List;
 
+/**
+ * 文档元数据 Spring Data MongoDB 仓储接口。
+ */
 public interface DocumentMongoRepository extends MongoRepository<DocumentDocument, String> {
 
     List<DocumentDocument> findByKnowledgeBaseId(String knowledgeBaseId);

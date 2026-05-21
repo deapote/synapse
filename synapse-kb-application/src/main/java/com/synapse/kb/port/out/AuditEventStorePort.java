@@ -6,6 +6,10 @@ import com.synapse.kb.model.KnowledgeBaseId;
 import java.time.Instant;
 import java.util.List;
 
+/**
+ * 审计事件存储端口，由持久化适配器实现。
+ * 保存并查询文档元数据变更与生命周期操作的审计记录。
+ */
 public interface AuditEventStorePort {
 
     void save(AuditEvent event);

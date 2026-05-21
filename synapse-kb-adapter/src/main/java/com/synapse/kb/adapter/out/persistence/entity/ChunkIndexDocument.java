@@ -8,6 +8,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 文档 chunk 关键词索引 MongoDB 文档实体，对应 Chunk 领域模型。
+ * 保存切分后的文本、分词结果、词频及文档时效元数据，支撑 BM25 关键词召回。
+ */
 @Document(collection = "document_chunk_index")
 @CompoundIndex(name = "idx_chunk_kb_tokens", def = "{'knowledgeBaseId': 1, 'tokens': 1}")
 public class ChunkIndexDocument {

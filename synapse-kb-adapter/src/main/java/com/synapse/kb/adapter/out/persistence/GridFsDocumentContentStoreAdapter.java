@@ -14,6 +14,10 @@ import org.springframework.stereotype.Component;
 
 import java.io.InputStream;
 
+/**
+ * 基于 GridFS 的文档内容存储适配器，实现 DocumentContentStorePort。
+ * 负责原始文件流的持久化、读取与删除，元数据附带 knowledgeBaseId 与 documentId。
+ */
 @Component
 public class GridFsDocumentContentStoreAdapter implements DocumentContentStorePort {
 

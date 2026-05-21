@@ -6,6 +6,9 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 import java.time.Instant;
 import java.util.List;
 
+/**
+ * 文档索引刷新任务 Spring Data MongoDB 仓储接口。
+ */
 public interface DocumentIndexRefreshJobMongoRepository extends MongoRepository<DocumentIndexRefreshJobDocument, String> {
 
     List<DocumentIndexRefreshJobDocument> findByStatusAndNextRunAtLessThanEqualOrderByCreatedAtAsc(

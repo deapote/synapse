@@ -7,6 +7,7 @@ import com.synapse.kb.adapter.in.web.dto.SupersedeDocumentRequest;
 import com.synapse.kb.adapter.in.web.dto.UpdateDocumentMetadataRequest;
 import com.synapse.kb.model.Document;
 import com.synapse.kb.model.DocumentId;
+import com.synapse.kb.model.DocumentIndexStatus;
 import com.synapse.kb.model.DocumentLifecycleStatus;
 import com.synapse.kb.model.DocumentMetadata;
 import com.synapse.kb.model.DocumentSourceType;
@@ -150,34 +151,30 @@ public class DocumentController {
     ) {
         return SaTokenReactorBridge.blockingCall(() -> {
             validatePage(page, size);
-            List<Document> docs = listUseCase.listByKnowledgeBase(new KnowledgeBaseId(kbId));
-
-            java.util.stream.Stream<Document> stream = docs.stream();
-            if (sourceType != null && !sourceType.isBlank()) {
-                stream = stream.filter(d -> sourceType.equalsIgnoreCase(
-                        d.getSourceType() != null ? d.getSourceType().name() : null));
-            }
-            if (lifecycleStatus != null && !lifecycleStatus.isBlank()) {
-                stream = stream.filter(d -> lifecycleStatus.equalsIgnoreCase(
-                        d.getLifecycleStatus() != null ? d.getLifecycleStatus().name() : null));
-            }
-            if (indexStatus != null && !indexStatus.isBlank()) {
-                stream = stream.filter(d -> indexStatus.equalsIgnoreCase(
-                        d.getIndexStatus() != null ? d.getIndexStatus().name() : null));
-            }
-            if (canonicalKey != null && !canonicalKey.isBlank()) {
-                stream = stream.filter(d -> canonicalKey.equals(d.getCanonicalKey()));
-            }
-
-            List<Document> filtered = stream.toList();
-            int from = page * size;
-            int to = Math.min(from + size, filtered.size());
-            List<Document> paginated = from < filtered.size() ? filtered.subList(from, to) : List.of();
-
-            return paginated.stream()
+            ListDocumentUseCase.ListDocumentQuery query = new ListDocumentUseCase.ListDocumentQuery(
+                    new KnowledgeBaseId(kbId),
+                    page,
+                    size,
+                    parseEnum(sourceType, DocumentSourceType.class),
+                    parseEnum(lifecycleStatus, DocumentLifecycleStatus.class),
+                    parseEnum(indexStatus, DocumentIndexStatus.class),
+                    canonicalKey
+            );
+            return listUseCase.listDocuments(query).stream()
                     .map(this::toResponse)
                     .toList();
         });
+    }
+
+    private static <E extends Enum<E>> E parseEnum(String value, Class<E> enumClass) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Enum.valueOf(enumClass, value.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new DomainException("非法枚举值: " + value + " (允许值: " + java.util.Arrays.toString(enumClass.getEnumConstants()) + ")");
+        }
     }
 
     @DeleteMapping("/api/documents/{id}")

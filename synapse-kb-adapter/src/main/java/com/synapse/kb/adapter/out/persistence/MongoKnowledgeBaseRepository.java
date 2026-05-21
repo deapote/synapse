@@ -11,6 +11,10 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * 知识库领域仓储实现，封装 Spring Data MongoDB 操作。
+ * 负责 KnowledgeBase 聚合与 MongoDB 文档之间的映射及持久化。
+ */
 @Component
 public class MongoKnowledgeBaseRepository implements KnowledgeBaseRepository {
 

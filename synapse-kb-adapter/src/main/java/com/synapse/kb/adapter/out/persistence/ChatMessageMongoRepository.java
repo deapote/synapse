@@ -6,6 +6,9 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 
 import java.util.List;
 
+/**
+ * 聊天消息 Spring Data MongoDB 仓储接口。
+ */
 public interface ChatMessageMongoRepository extends MongoRepository<ChatMessageDocument, String> {
 
     List<ChatMessageDocument> findBySessionId(String sessionId, Pageable pageable);

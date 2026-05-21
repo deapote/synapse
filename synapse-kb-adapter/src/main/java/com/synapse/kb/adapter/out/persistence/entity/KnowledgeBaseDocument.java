@@ -6,6 +6,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
+/**
+ * 知识库 MongoDB 文档实体，对应 KnowledgeBase 领域模型。
+ * 保存知识库基本信息及归属用户，是文档与聊天会话的顶层隔离单元。
+ */
 @Document(collection = "knowledge_bases")
 public class KnowledgeBaseDocument {
     @Id

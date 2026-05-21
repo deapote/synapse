@@ -6,6 +6,9 @@ import com.fasterxml.jackson.annotation.Nulls;
 import java.time.LocalDate;
 import java.util.Optional;
 
+/**
+ * 更新文档元数据请求 DTO，字段均为可选。
+ */
 public record UpdateDocumentMetadataRequest(
         @JsonSetter(nulls = Nulls.SET) Optional<String> sourceType,
         @JsonSetter(nulls = Nulls.SET) Optional<String> canonicalKey,

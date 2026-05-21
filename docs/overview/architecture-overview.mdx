@@ -86,6 +86,13 @@ sequenceDiagram
 | **Browser** | 发送 POST 请求，携带账号密码 |
 | **AuthController** (Adapter-In) | 接收 HTTP 请求，把 JSON 转成 DTO，调用 Application Service |
 | **AuthApplicationService** (Application) | 校验参数 → 查用户 → 验密码 → 创建会话 → 聚合权限 |
+| **KnowledgeBaseManagementService** (Application) | 知识库 CRUD：创建、列表、删除 |
+| **DocumentCommandService** (Application) | 文档命令：上传、列表、删除、重试摄入 |
+| **DocumentIngestionService** (Application) | 后台摄入 Worker：解析、分块、向量化、双写索引 |
+| **DocumentIndexRefreshService** (Application) | 索引刷新 Worker：重建 Milvus/Mongo 索引 |
+| **DocumentGovernanceService** (Application) | 文档治理：metadata 更新、版本替代、废止/启用、审计 |
+| **QueryKnowledgeBaseApplicationService** (Application) | RAG 问答：检索、重排、过滤、Prompt 组装 |
+| **ChatApplicationService** (Application) | 聊天会话管理：会话创建、消息列表、摘要触发 |
 | **UserAccount** (Domain) | 封装用户状态和校验规则（密码哈希非空、用户名长度限制等） |
 | **MongoUserAccountRepository** (Adapter-Out) | 把领域实体转成 MongoDB Document，执行查询，再转回实体 |
 | **BCryptPasswordHasherAdapter** (Adapter-Out) | 用 Spring Security Crypto 比对密码 |
@@ -238,7 +245,7 @@ graph LR
 
 1. Spring Boot 扫描 `synapse-kb-bootstrap` 启动
 2. 加载 `synapse-auth-config` 和 `synapse-kb-config` 中的 `@Configuration`
-3. Config 层创建 Application Service Bean，注入 Repository/Port 实现
+3. Config 层创建各 Application Service Bean（`KnowledgeBaseManagementService`、`DocumentCommandService`、`DocumentIngestionService`、`DocumentIndexRefreshService`、`DocumentGovernanceService`、`QueryKnowledgeBaseApplicationService`、`ChatApplicationService`），注入 Repository/Port 实现
 4. Adapter 层的 `@Component` 被 Spring 扫描注册
 5. `AuthDataInitializer` 在启动时初始化默认角色和 admin 用户
 6. `IngestionJobWorker` 开始定时轮询后台任务

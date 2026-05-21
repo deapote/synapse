@@ -11,6 +11,10 @@ import reactor.util.context.ContextView;
 
 import java.util.UUID;
 
+/**
+ * 为请求生成并注入 traceId。
+ * 优先从请求头 X-Trace-Id 获取，缺失时自动生成 UUID，并写入响应头和 Reactor Context。
+ */
 @Component
 public class TraceIdWebFilter implements WebFilter {
     public static final String TRACE_ID = "traceId";

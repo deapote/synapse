@@ -6,6 +6,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import java.time.Instant;
 import java.util.List;
 
+/**
+ * 聊天消息 MongoDB 文档实体，对应 ChatMessage 领域模型。
+ * 按 sessionId + sequence 排序存储会话中的单条消息及其引用片段。
+ */
 @Document(collection = "chat_messages")
 public class ChatMessageDocument {
     @Id

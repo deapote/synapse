@@ -19,6 +19,10 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.index.CompoundIndexDefinition;
 import org.springframework.data.mongodb.core.index.Index;
 
+/**
+ * MongoDB 集合索引初始化配置。
+ * 应用启动时自动创建知识库、文档、Chunk、会话等集合所需的复合索引与唯一索引。
+ */
 @Configuration
 public class MongoIndexInitializer {
     private static final Logger log = LoggerFactory.getLogger(MongoIndexInitializer.class);

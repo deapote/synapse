@@ -6,6 +6,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
+/**
+ * 文档索引刷新任务 MongoDB 文档实体。
+ * 异步驱动 Milvus 向量索引与 Mongo 关键词索引的元数据一致性刷新。
+ */
 @Document(collection = "document_index_refresh_jobs")
 public class DocumentIndexRefreshJobDocument {
 

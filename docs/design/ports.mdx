@@ -158,14 +158,15 @@ public interface SupersedeDocumentUseCase {
 }
 ```
 
-v2 中 `KnowledgeBaseApplicationService` 完整实现了上述接口：
+v2 中这些接口由多个 Application Service 分别实现：
 
-- **`updateMetadata`**：调用 `document.patchMetadata(patch)` 做原子校验和赋值，然后 `markIndexStale()` 触发后台索引刷新
-- **`supersede`**：校验旧文档为 `ACTIVE`、新旧文档同属一个知识库，然后 `oldDoc.supersedeBy(newDoc, effectiveTo)`
-- **`retire`** / **`reactivate`**：变更 `lifecycleStatus`，标记索引 `STALE`
-- **`reindex`**：强制递增 `metadataVersion` 并创建刷新任务
-- **`getVersionChain`**：基于 `supersedesDocumentId` 向前/向后追踪构建版本链
-- **`getAuditEvents`**：查询 `document_audit_events` 集合
+- **`DocumentGovernanceService`**：实现 `UpdateDocumentMetadataUseCase`、`SupersedeDocumentUseCase`、`RetireDocumentUseCase`、`ReactivateDocumentUseCase`、`ReindexDocumentUseCase`、`GetDocumentVersionChainUseCase`、`GetDocumentAuditEventsUseCase`
+  - `updateMetadata`：调用 `document.patchMetadata(patch)` 做原子校验和赋值，然后 `markIndexStale()` 触发后台索引刷新
+  - `supersede`：校验旧文档为 `ACTIVE`、新旧文档同属一个知识库，然后 `oldDoc.supersedeBy(newDoc, effectiveTo)`
+  - `retire` / `reactivate`：变更 `lifecycleStatus`，标记索引 `STALE`
+  - `reindex`：强制递增 `metadataVersion` 并创建刷新任务
+  - `getVersionChain`：基于 `supersedesDocumentId` 向前/向后追踪构建版本链
+  - `getAuditEvents`：查询 `document_audit_events` 集合
 
 ## 接口隔离的设计原因
 
@@ -178,7 +179,7 @@ void shouldRejectDuplicateContent() {
     when(mockRepo.findByKnowledgeBaseIdAndContentHash(any(), any()))
         .thenReturn(List.of(existingDoc));
 
-    KnowledgeBaseApplicationService service = new KnowledgeBaseApplicationService(
+    DocumentCommandService service = new DocumentCommandService(
         mockRepo, ...  // 其他端口也 mock
     );
 
@@ -241,27 +242,41 @@ public interface QueryKnowledgeBaseUseCase {
 ## Application Service 实现多个 UseCase
 
 ```java
-public class KnowledgeBaseApplicationService implements
+public class KnowledgeBaseManagementService implements
         CreateKnowledgeBaseUseCase,
         DeleteKnowledgeBaseUseCase,
+        ListKnowledgeBaseUseCase { }
+
+public class DocumentCommandService implements
         IngestDocumentUseCase,
-        QueryKnowledgeBaseUseCase,
+        DeleteDocumentUseCase,
+        RetryDocumentIngestionUseCase { }
+
+public class DocumentIngestionService implements
+        ProcessIngestionJobUseCase { }
+
+public class DocumentGovernanceService implements
         UpdateDocumentMetadataUseCase,
         SupersedeDocumentUseCase,
         RetireDocumentUseCase,
         ReactivateDocumentUseCase,
         ReindexDocumentUseCase,
         GetDocumentVersionChainUseCase,
-        GetDocumentAuditEventsUseCase,
-        ... {
-    // 一个类实现所有 KB 相关的入站端口
-}
+        GetDocumentAuditEventsUseCase { }
+
+public class QueryKnowledgeBaseApplicationService implements
+        QueryKnowledgeBaseUseCase { }
+
+public class ChatApplicationService implements
+        GetCurrentChatSessionUseCase,
+        CreateChatSessionUseCase,
+        ListChatMessagesUseCase { }
 ```
 
-这是项目中常见的模式：一个 Application Service 实现某个 bounded context 的所有 Driving Port。好处：
-- 端口粒度细（按用例），类粒度粗（按上下文）
-- 避免类爆炸（如果每个 UseCase 一个类，会有 20+ 个 Service 类）
-- 共享私有方法（如 `requireKnowledgeBase()`、`safeFailureReason()`）
+这是项目中的模式：按职责将 Driving Port 拆分到多个 Application Service 中。好处：
+- 端口粒度细（按用例），类粒度也适中（按职责域）
+- 避免单类膨胀（原 `KnowledgeBaseApplicationService` 超过 1300 行）
+- 共享私有方法提取到 `support/` 包下的辅助类（如 `KnowledgeBaseAccessGuard`、`FailureReasonSanitizer`）
 
 ## AccessControlPort —— 跨上下文 ACL
 
@@ -285,6 +300,6 @@ public class SaTokenAccessControlAdapter implements AccessControlPort {
 }
 ```
 
-Config 层把 `SaTokenAccessControlAdapter` 注入给 `KnowledgeBaseApplicationService`。
+Config 层把 `SaTokenAccessControlAdapter` 注入给各 Application Service（如 `DocumentCommandService`、`QueryKnowledgeBaseApplicationService` 等）。
 
 这就是**防腐层（Anti-Corruption Layer, ACL）**模式：KB 上下文用自己的语言定义"我需要什么权限能力"，不关心 Sa-Token 的具体 API。

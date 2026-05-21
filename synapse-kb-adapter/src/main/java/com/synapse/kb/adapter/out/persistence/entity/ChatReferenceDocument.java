@@ -2,6 +2,10 @@ package com.synapse.kb.adapter.out.persistence.entity;
 
 import java.time.LocalDate;
 
+/**
+ * 聊天消息引用片段内嵌文档，对应 ChunkReference 值对象。
+ * 记录 RAG 检索召回的文档片段及其时效元数据，用于 SSE 引用展示。
+ */
 public class ChatReferenceDocument {
     private String documentId;
     private String documentName;
