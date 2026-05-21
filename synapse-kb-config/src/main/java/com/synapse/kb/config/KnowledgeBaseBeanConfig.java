@@ -112,8 +112,9 @@ public class KnowledgeBaseBeanConfig {
 
     // ==================== Application Services ====================
 
-    @Bean
-    public CreateKnowledgeBaseUseCase createKnowledgeBaseUseCase(
+    @Bean(name = {"knowledgeBaseManagementService", "createKnowledgeBaseUseCase",
+            "deleteKnowledgeBaseUseCase", "listKnowledgeBaseUseCase"})
+    public KnowledgeBaseManagementService knowledgeBaseManagementService(
             KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
             KnowledgeBaseRepository knowledgeBaseRepository,
             AccessControlPort accessControlPort,
@@ -128,79 +129,9 @@ public class KnowledgeBaseBeanConfig {
                 refreshJobRepository, ingestionJobRepository);
     }
 
-    @Bean
-    public DeleteKnowledgeBaseUseCase deleteKnowledgeBaseUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            KnowledgeBaseRepository knowledgeBaseRepository,
-            AccessControlPort accessControlPort,
-            DocumentRepository documentRepository,
-            DocumentIndexingService documentIndexingService,
-            DocumentChunkRepository documentChunkRepository,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            IngestionJobRepository ingestionJobRepository
-    ) {
-        return new KnowledgeBaseManagementService(knowledgeBaseAccessGuard, knowledgeBaseRepository,
-                accessControlPort, documentRepository, documentIndexingService, documentChunkRepository,
-                refreshJobRepository, ingestionJobRepository);
-    }
-
-    @Bean
-    public ListKnowledgeBaseUseCase listKnowledgeBaseUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            KnowledgeBaseRepository knowledgeBaseRepository,
-            AccessControlPort accessControlPort,
-            DocumentRepository documentRepository,
-            DocumentIndexingService documentIndexingService,
-            DocumentChunkRepository documentChunkRepository,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            IngestionJobRepository ingestionJobRepository
-    ) {
-        return new KnowledgeBaseManagementService(knowledgeBaseAccessGuard, knowledgeBaseRepository,
-                accessControlPort, documentRepository, documentIndexingService, documentChunkRepository,
-                refreshJobRepository, ingestionJobRepository);
-    }
-
-    @Bean
-    public IngestDocumentUseCase ingestDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentContentStorePort documentContentStorePort,
-            IngestionJobRepository ingestionJobRepository,
-            DocumentIndexingService documentIndexingService
-    ) {
-        return new DocumentCommandService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, documentContentStorePort, ingestionJobRepository, documentIndexingService);
-    }
-
-    @Bean
-    public ListDocumentUseCase listDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentContentStorePort documentContentStorePort,
-            IngestionJobRepository ingestionJobRepository,
-            DocumentIndexingService documentIndexingService
-    ) {
-        return new DocumentCommandService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, documentContentStorePort, ingestionJobRepository, documentIndexingService);
-    }
-
-    @Bean
-    public DeleteDocumentUseCase deleteDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentContentStorePort documentContentStorePort,
-            IngestionJobRepository ingestionJobRepository,
-            DocumentIndexingService documentIndexingService
-    ) {
-        return new DocumentCommandService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, documentContentStorePort, ingestionJobRepository, documentIndexingService);
-    }
-
-    @Bean
-    public RetryDocumentIngestionUseCase retryDocumentIngestionUseCase(
+    @Bean(name = {"documentCommandService", "ingestDocumentUseCase", "listDocumentUseCase",
+            "deleteDocumentUseCase", "retryDocumentIngestionUseCase"})
+    public DocumentCommandService documentCommandService(
             KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
             DocumentRepository documentRepository,
             AccessControlPort accessControlPort,
@@ -245,8 +176,10 @@ public class KnowledgeBaseBeanConfig {
                 failureReasonSanitizer, metadataSnapshotter);
     }
 
-    @Bean
-    public UpdateDocumentMetadataUseCase updateDocumentMetadataUseCase(
+    @Bean(name = {"documentGovernanceService", "updateDocumentMetadataUseCase",
+            "supersedeDocumentUseCase", "retireDocumentUseCase", "reactivateDocumentUseCase",
+            "reindexDocumentUseCase", "getDocumentVersionChainUseCase", "getDocumentAuditEventsUseCase"})
+    public DocumentGovernanceService documentGovernanceService(
             KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
             DocumentRepository documentRepository,
             AccessControlPort accessControlPort,
@@ -258,116 +191,9 @@ public class KnowledgeBaseBeanConfig {
                 accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
     }
 
-    @Bean
-    public SupersedeDocumentUseCase supersedeDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            MetadataSnapshotter metadataSnapshotter,
-            DocumentAuditService documentAuditService
-    ) {
-        return new DocumentGovernanceService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
-    }
-
-    @Bean
-    public RetireDocumentUseCase retireDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            MetadataSnapshotter metadataSnapshotter,
-            DocumentAuditService documentAuditService
-    ) {
-        return new DocumentGovernanceService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
-    }
-
-    @Bean
-    public ReactivateDocumentUseCase reactivateDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            MetadataSnapshotter metadataSnapshotter,
-            DocumentAuditService documentAuditService
-    ) {
-        return new DocumentGovernanceService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
-    }
-
-    @Bean
-    public ReindexDocumentUseCase reindexDocumentUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            MetadataSnapshotter metadataSnapshotter,
-            DocumentAuditService documentAuditService
-    ) {
-        return new DocumentGovernanceService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
-    }
-
-    @Bean
-    public GetDocumentVersionChainUseCase getDocumentVersionChainUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            MetadataSnapshotter metadataSnapshotter,
-            DocumentAuditService documentAuditService
-    ) {
-        return new DocumentGovernanceService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
-    }
-
-    @Bean
-    public GetDocumentAuditEventsUseCase getDocumentAuditEventsUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            DocumentRepository documentRepository,
-            AccessControlPort accessControlPort,
-            DocumentIndexRefreshJobRepository refreshJobRepository,
-            MetadataSnapshotter metadataSnapshotter,
-            DocumentAuditService documentAuditService
-    ) {
-        return new DocumentGovernanceService(knowledgeBaseAccessGuard, documentRepository,
-                accessControlPort, refreshJobRepository, metadataSnapshotter, documentAuditService);
-    }
-
-    @Bean
-    public GetCurrentChatSessionUseCase getCurrentChatSessionUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            ChatSessionRepository chatSessionRepository,
-            ChatMessageRepository chatMessageRepository,
-            AccessControlPort accessControlPort,
-            ChatMemorySummarizerPort chatMemorySummarizerPort,
-            @Value("${synapse.chat-memory.recent-message-limit:8}") int recentMessageLimit,
-            @Value("${synapse.chat-memory.summary-trigger-message-count:12}") int summaryTriggerMessageCount,
-            @Value("${synapse.chat-memory.max-summary-chars:1500}") int maxSummaryChars
-    ) {
-        return new ChatApplicationService(knowledgeBaseAccessGuard, chatSessionRepository, chatMessageRepository,
-                accessControlPort, chatMemorySummarizerPort, recentMessageLimit, summaryTriggerMessageCount, maxSummaryChars);
-    }
-
-    @Bean
-    public CreateChatSessionUseCase createChatSessionUseCase(
-            KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
-            ChatSessionRepository chatSessionRepository,
-            ChatMessageRepository chatMessageRepository,
-            AccessControlPort accessControlPort,
-            ChatMemorySummarizerPort chatMemorySummarizerPort,
-            @Value("${synapse.chat-memory.recent-message-limit:8}") int recentMessageLimit,
-            @Value("${synapse.chat-memory.summary-trigger-message-count:12}") int summaryTriggerMessageCount,
-            @Value("${synapse.chat-memory.max-summary-chars:1500}") int maxSummaryChars
-    ) {
-        return new ChatApplicationService(knowledgeBaseAccessGuard, chatSessionRepository, chatMessageRepository,
-                accessControlPort, chatMemorySummarizerPort, recentMessageLimit, summaryTriggerMessageCount, maxSummaryChars);
-    }
-
-    @Bean
-    public ListChatMessagesUseCase listChatMessagesUseCase(
+    @Bean(name = {"chatApplicationService", "getCurrentChatSessionUseCase",
+            "createChatSessionUseCase", "listChatMessagesUseCase"})
+    public ChatApplicationService chatApplicationService(
             KnowledgeBaseAccessGuard knowledgeBaseAccessGuard,
             ChatSessionRepository chatSessionRepository,
             ChatMessageRepository chatMessageRepository,

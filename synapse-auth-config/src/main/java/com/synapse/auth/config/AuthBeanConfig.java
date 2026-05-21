@@ -14,7 +14,7 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class AuthBeanConfig {
-    @Bean
+    @Bean(name = {"authApplicationService", "authenticationUseCase", "userAdminUseCase"})
     public AuthApplicationService authApplicationService(
             UserAccountRepository userRepository,
             RoleDefinitionRepository roleRepository,
